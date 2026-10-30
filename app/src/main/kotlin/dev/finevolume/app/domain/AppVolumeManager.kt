@@ -33,17 +33,17 @@ class AppVolumeManager @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-
     private val _activeAppSessions = MutableStateFlow<List<AppVolumeSession>>(emptyList())
     val activeAppSessions: StateFlow<List<AppVolumeSession>> = _activeAppSessions.asStateFlow()
-
     private val appVolumeCache = ConcurrentHashMap<String, Float>()
-    private var isObserving = false
+    @Volatile private var isObserving = false
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val playbackCallback = object : AudioManager.AudioPlaybackCallback() {
         override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
             if (isObserving) {
+                // Refresh the list whenever a player is created/replaced. The Shizuku
+                // service independently reapplies the gain to each new player proxy.
                 refreshActiveSessions()
             }
         }
@@ -52,48 +52,32 @@ class AppVolumeManager @Inject constructor(
     fun startObserving() {
         if (isObserving) return
         isObserving = true
-        try {
-            audioManager.registerAudioPlaybackCallback(playbackCallback, mainHandler)
-        } catch (_: Throwable) {}
+        try { audioManager.registerAudioPlaybackCallback(playbackCallback, mainHandler) } catch (_: Throwable) {}
         refreshActiveSessions()
     }
 
     fun stopObserving() {
         if (!isObserving) return
         isObserving = false
-        try {
-            audioManager.unregisterAudioPlaybackCallback(playbackCallback)
-        } catch (_: Throwable) {}
+        try { audioManager.unregisterAudioPlaybackCallback(playbackCallback) } catch (_: Throwable) {}
     }
 
     fun refreshActiveSessions() {
         scope.launch(Dispatchers.IO) {
             val service = shizukuPlayerBackend.currentUserService
             val packages = if (service != null) {
-                try {
-                    service.activeAppPackages ?: emptyList()
-                } catch (_: Throwable) {
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
+                try { service.activeAppPackages ?: emptyList() } catch (_: Throwable) { emptyList() }
+            } else emptyList()
 
             val sessions = packages.map { pkg ->
                 val meta = appMetadataCache.getAppMetadata(pkg)
                 val currentVol = appVolumeCache[pkg] ?: run {
-                    val sGain = try { service?.getAppGain(pkg) ?: 1.0f } catch (_: Throwable) { 1.0f }
-                    appVolumeCache[pkg] = sGain
-                    sGain
+                    val saved = try { service?.getAppGain(pkg) ?: 1.0f } catch (_: Throwable) { 1.0f }
+                    appVolumeCache[pkg] = saved
+                    saved
                 }
-                AppVolumeSession(
-                    packageName = pkg,
-                    appName = meta.appName,
-                    icon = meta.icon,
-                    volume = currentVol
-                )
+                AppVolumeSession(pkg, meta.appName, meta.icon, currentVol)
             }
-
             _activeAppSessions.value = sessions
         }
     }
@@ -102,27 +86,17 @@ class AppVolumeManager @Inject constructor(
         val resolution = settingsRepository.cachedSettings.mediaResolution.coerceAtLeast(1)
         val step = (position * resolution).roundToInt().coerceIn(0, resolution)
         val quantized = step.toFloat() / resolution
-
         appVolumeCache[packageName] = quantized
-
-        // Update UI state reactively
         _activeAppSessions.value = _activeAppSessions.value.map { session ->
-            if (session.packageName == packageName) {
-                session.copy(volume = quantized)
-            } else {
-                session
-            }
+            if (session.packageName == packageName) session.copy(volume = quantized) else session
         }
-
-        // Apply gain via Shizuku user service in background
         scope.launch(Dispatchers.IO) {
-            try {
-                shizukuPlayerBackend.currentUserService?.applyAppGain(packageName, quantized)
-            } catch (_: Throwable) {}
+            // Persist first so a simultaneous Shizuku restart cannot lose the setting.
+            runCatching { settingsRepository.updateAppVolumeGain(packageName, quantized) }
+            try { shizukuPlayerBackend.currentUserService?.applyAppGain(packageName, quantized) } catch (_: Throwable) {}
         }
     }
 
-    fun isShizukuReady(): Boolean {
-        return shizukuManager.isConnected.value && shizukuManager.permissionGranted.value
-    }
+    fun isShizukuReady(): Boolean =
+        shizukuManager.isConnected.value && shizukuManager.permissionGranted.value
 }
