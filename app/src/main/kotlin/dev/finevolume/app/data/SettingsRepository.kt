@@ -3,6 +3,7 @@ package dev.finevolume.app.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -46,28 +47,34 @@ class SettingsRepository @Inject constructor(
 
     init {
         repoScope.launch {
-            try {
-                settings.collect { cachedSettings = it }
-            } catch (_: Exception) {}
+            try { settings.collect { cachedSettings = it } } catch (_: Exception) {}
         }
     }
 
-    suspend fun updateIsEnabled(enabled: Boolean) {
-        dataStore.edit { it[IS_ENABLED] = enabled }
+    suspend fun updateAppVolumeGain(packageName: String, gain: Float) {
+        dataStore.edit { prefs ->
+            prefs[floatPreferencesKey(appGainKey(packageName))] = gain.coerceIn(0f, 1f)
+        }
     }
-    suspend fun updateMediaResolution(res: Int) {
-        dataStore.edit { it[MEDIA_RES] = res }
+
+    suspend fun getAppVolumeGains(): Map<String, Float> {
+        return dataStore.data.first().asMap().mapNotNull { (key, value) ->
+            if (key.name.startsWith(APP_GAIN_PREFIX) && value is Float) {
+                key.name.removePrefix(APP_GAIN_PREFIX) to value.coerceIn(0f, 1f)
+            } else null
+        }.toMap()
     }
-    suspend fun updateMediaIncrement(inc: Int) {
-        dataStore.edit { it[MEDIA_INC] = inc }
-    }
-    suspend fun updateLongPressRepeatInterval(ms: Int) {
-        dataStore.edit { it[LONG_PRESS_INTERVAL] = ms.coerceIn(20, 500) }
-    }
-    suspend fun updateHapticLevel(lvl: Int) {
-        dataStore.edit { it[HAPTIC_LVL] = lvl }
-    }
-    suspend fun updateAccelerationMode(mode: AccelerationMode) {
-        dataStore.edit { it[ACCEL_MODE] = mode.name }
+
+    private fun appGainKey(packageName: String) = APP_GAIN_PREFIX + packageName
+
+    suspend fun updateIsEnabled(enabled: Boolean) { dataStore.edit { it[IS_ENABLED] = enabled } }
+    suspend fun updateMediaResolution(res: Int) { dataStore.edit { it[MEDIA_RES] = res } }
+    suspend fun updateMediaIncrement(inc: Int) { dataStore.edit { it[MEDIA_INC] = inc } }
+    suspend fun updateLongPressRepeatInterval(ms: Int) { dataStore.edit { it[LONG_PRESS_INTERVAL] = ms.coerceIn(20, 500) } }
+    suspend fun updateHapticLevel(lvl: Int) { dataStore.edit { it[HAPTIC_LVL] = lvl } }
+    suspend fun updateAccelerationMode(mode: AccelerationMode) { dataStore.edit { it[ACCEL_MODE] = mode.name } }
+
+    companion object {
+        private const val APP_GAIN_PREFIX = "app_volume_gain_"
     }
 }
