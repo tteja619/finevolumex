@@ -34,6 +34,7 @@ import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.lang.reflect.Field;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
@@ -251,15 +252,33 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
         if (certificateFile.exists() && !certificateFile.delete()) {
             throw new IOException("Could not delete the saved ADB certificate file.");
         }
+        File legacyKey = new File(keyFile.getParentFile(), "host-private.pk8");
+        if (legacyKey.exists() && !legacyKey.delete()) {
+            throw new IOException("Could not delete the legacy ADB private-key file.");
+        }
+
         KeyStore keyStore = KeyStore.getInstance(ANDROID_KEYSTORE);
         keyStore.load(null);
         if (keyStore.containsAlias(ENCRYPTION_KEY_ALIAS)) {
             keyStore.deleteEntry(ENCRYPTION_KEY_ALIAS);
         }
-        File legacyKey = new File(keyFile.getParentFile(), "host-private.pk8");
-        if (legacyKey.exists() && !legacyKey.delete()) {
-            throw new IOException("Could not delete the legacy ADB private-key file.");
+
+        // libadb 3.1.1 caches a process-wide SSLContext, which retains the old
+        // client certificate even after the ADB key is changed. Clear it when
+        // the user explicitly forgets pairing so a new identity can re-pair.
+        try {
+            Class<?> sslUtils = Class.forName("io.github.muntashirakon.adb.SslUtils");
+            Field contextField = sslUtils.getDeclaredField("sslContext");
+            contextField.setAccessible(true);
+            contextField.set(null, null);
+        } catch (ClassNotFoundException ignored) {
+            // The dependency may change implementation in a future release.
+        } catch (NoSuchFieldException ignored) {
+            // No static context cache in a future/fixed libadb release.
         }
+
+        privateKey = null;
+        certificate = null;
     }
 
     @Override
