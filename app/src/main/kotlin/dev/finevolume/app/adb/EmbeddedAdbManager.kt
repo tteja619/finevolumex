@@ -36,6 +36,7 @@ data class EmbeddedAdbStatus(
     val port: Int? = null,
     val shellUid: Int? = null,
     val pairedKeyStored: Boolean = false,
+    val audioHelperReady: Boolean = false,
     val detail: String? = null
 ) {
     val isConnected: Boolean get() = phase == EmbeddedAdbPhase.CONNECTED
@@ -51,6 +52,7 @@ class EmbeddedAdbManager @Inject constructor(
     val status: StateFlow<EmbeddedAdbStatus> = _status
 
     @Volatile private var client: Kadb? = null
+    @Volatile private var audioHelper: AdbAudioHelperBridge? = null
     private val connectionLock = Any()
 
     /**
@@ -214,24 +216,82 @@ class EmbeddedAdbManager @Inject constructor(
                     identity.allOutput.trim()
             }
 
+            val helper = AdbAudioHelperBridge(context, candidate)
+            val helperResult = helper.start()
             synchronized(connectionLock) {
+                audioHelper?.close()
                 client?.close()
                 client = candidate
+                audioHelper = helper.takeIf { helperResult.isSuccess }
             }
-            setStatus(
-                EmbeddedAdbStatus(
-                    phase = EmbeddedAdbPhase.CONNECTED,
-                    message = "Embedded ADB connected. Android shell identity verified.",
-                    host = host,
-                    port = port,
-                    shellUid = uid,
-                    pairedKeyStored = hasStoredIdentity()
+
+            if (helperResult.isSuccess) {
+                setStatus(
+                    EmbeddedAdbStatus(
+                        phase = EmbeddedAdbPhase.CONNECTED,
+                        message = "Embedded ADB connected. Audio helper is running as shell UID 2000.",
+                        host = host,
+                        port = port,
+                        shellUid = uid,
+                        pairedKeyStored = hasStoredIdentity(),
+                        audioHelperReady = true
+                    )
                 )
-            )
+            } else {
+                setStatus(
+                    EmbeddedAdbStatus(
+                        phase = EmbeddedAdbPhase.CONNECTED,
+                        message = "ADB is connected, but the audio helper could not start. Native volume remains available.",
+                        host = host,
+                        port = port,
+                        shellUid = uid,
+                        pairedKeyStored = hasStoredIdentity(),
+                        audioHelperReady = false,
+                        detail = helperResult.exceptionOrNull()?.let { rootCause(it).javaClass.simpleName + ": " + (rootCause(it).message ?: "No detail") }
+                    )
+                )
+            }
         } catch (t: Throwable) {
             candidate.close()
             throw t
         }
+    }
+
+    suspend fun setMediaGain(gain: Float): Result<Unit> {
+        val helper = synchronized(connectionLock) { audioHelper }
+            ?: return Result.failure(IllegalStateException("ADB audio helper is not running."))
+        return helper.setMediaGain(gain).onFailure { markHelperFailure(it) }
+    }
+
+    suspend fun setAppGain(packageName: String, gain: Float): Result<Unit> {
+        val helper = synchronized(connectionLock) { audioHelper }
+            ?: return Result.failure(IllegalStateException("ADB audio helper is not running."))
+        return helper.setAppGain(packageName, gain).onFailure { markHelperFailure(it) }
+    }
+
+    suspend fun activeMediaApps(): Result<List<String>> {
+        val helper = synchronized(connectionLock) { audioHelper }
+            ?: return Result.failure(IllegalStateException("ADB audio helper is not running."))
+        return helper.activeMediaApps().onFailure { markHelperFailure(it) }
+    }
+
+    suspend fun activeSessionCount(): Result<Int> {
+        val helper = synchronized(connectionLock) { audioHelper }
+            ?: return Result.failure(IllegalStateException("ADB audio helper is not running."))
+        return helper.activeSessionCount().onFailure { markHelperFailure(it) }
+    }
+
+    private fun markHelperFailure(error: Throwable) {
+        val detail = rootCause(error)
+        synchronized(connectionLock) {
+            runCatching { audioHelper?.close() }
+            audioHelper = null
+        }
+        _status.value = _status.value.copy(
+            audioHelperReady = false,
+            detail = detail.javaClass.simpleName + ": " + (detail.message ?: "No detail"),
+            message = "ADB transport exists, but the audio helper stopped. Reconnect to restart it."
+        )
     }
 
     suspend fun runReadOnlyShellCommand(command: String): Result<String> =
@@ -260,6 +320,8 @@ class EmbeddedAdbManager @Inject constructor(
 
     fun disconnect() {
         synchronized(connectionLock) {
+            runCatching { audioHelper?.close() }
+            audioHelper = null
             runCatching { client?.close() }
             client = null
         }
