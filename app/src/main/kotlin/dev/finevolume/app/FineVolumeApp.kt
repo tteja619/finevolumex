@@ -2,14 +2,13 @@ package dev.finevolume.app
 
 import android.app.Application
 import dagger.hilt.android.HiltAndroidApp
-import org.lsposed.hiddenapibypass.HiddenApiBypass
 
 @HiltAndroidApp
 class FineVolumeApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // Allow reflection on hidden Android APIs.
-        // Required for Shizuku-based IPlayer access to apply sub-step session gain.
-        HiddenApiBypass.addHiddenApiExemptions("")
+        // Hidden API exemptions are deliberately not enabled in the normal app
+        // process. They are applied only inside FineVolumeShellServer after it
+        // has been launched by the user's own ADB Wireless Debugging session.
     }
 }
