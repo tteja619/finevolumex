@@ -26,6 +26,7 @@ import java.io.BufferedReader
 import java.io.BufferedWriter
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -137,10 +138,11 @@ class WirelessAdbController @Inject constructor(
             }
             if (pairing.isFailure) {
                 val error = pairing.exceptionOrNull()!!
+                Log.e(TAG, "Wireless Debugging pairing failed", error)
                 _status.value = WirelessAdbStatus(
                     stage = WirelessAdbStage.ERROR,
                     message = "ADB pairing failed.",
-                    lastError = error.message ?: error.javaClass.simpleName
+                    lastError = describeError(error)
                 )
                 return@withContext Result.failure(error)
             }
@@ -150,6 +152,7 @@ class WirelessAdbController @Inject constructor(
                 message = "Pairing completed. Connecting to Wireless Debugging…"
             )
             runCatching { connectAndStartHelper() }.onFailure { error ->
+                Log.e(TAG, "ADB transport or audio helper startup failed after pairing", error)
                 disconnectTransport()
                 _status.value = WirelessAdbStatus(
                     stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
@@ -200,6 +203,7 @@ class WirelessAdbController @Inject constructor(
                 }
 
                 val success = runCatching { connectAndStartHelper() }.onFailure { error ->
+                    Log.e(TAG, "Wireless ADB watchdog reconnect failed", error)
                     _status.value = WirelessAdbStatus(
                         stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
                         message = "Waiting for Wireless Debugging. Turn it on in Developer Options; FineVolume will reconnect automatically.",
@@ -230,6 +234,7 @@ class WirelessAdbController @Inject constructor(
             disconnectTransport()
             connectAndStartHelper()
         }.onFailure { error ->
+            Log.e(TAG, "Manual Wireless ADB reconnect failed", error)
             _status.value = WirelessAdbStatus(
                 stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
                 message = "Could not reconnect. Check that Wireless Debugging is enabled.",
@@ -313,6 +318,7 @@ class WirelessAdbController @Inject constructor(
             val health = command(JSONObject().put("command", "ping"))
             _status.value = status.value.copy(activeMediaSessions = health.optInt("sessions", 0))
         } catch (error: Throwable) {
+            Log.e(TAG, "Wireless ADB connection or helper startup failed", error)
             disconnectTransport()
             throw error
         } finally {
@@ -467,11 +473,41 @@ class WirelessAdbController @Inject constructor(
         preferences.edit().putBoolean(KEY_PAIRED, false).apply()
         scope.launch {
             disconnectTransport()
-            _status.value = WirelessAdbStatus(
-                stage = WirelessAdbStage.NOT_PAIRED,
-                message = "FineVolume ADB pairing has been forgotten. Your Android Developer Options pairing entry may also be removed there."
-            )
+            runCatching { manager().clearIdentity() }
+                .onSuccess {
+                    _status.value = WirelessAdbStatus(
+                        stage = WirelessAdbStage.NOT_PAIRED,
+                        message = "FineVolume's encrypted ADB identity has been deleted. Remove the matching FineVolume entry from Android's paired devices if you also want to revoke the phone-side authorization."
+                    )
+                }
+                .onFailure { error ->
+                    Log.e(TAG, "Could not clear the saved ADB identity", error)
+                    _status.value = WirelessAdbStatus(
+                        stage = WirelessAdbStage.ERROR,
+                        message = "FineVolume could not delete the saved ADB identity.",
+                        lastError = describeError(error)
+                    )
+                }
         }
+    }
+
+    private fun rootCause(error: Throwable): Throwable {
+        var current = error
+        repeat(24) {
+            val next = when (current) {
+                is InvocationTargetException -> current.targetException ?: current.cause
+                else -> current.cause
+            } ?: return current
+            if (next === current) return current
+            current = next
+        }
+        return current
+    }
+
+    private fun describeError(error: Throwable): String {
+        val root = rootCause(error)
+        val message = root.message?.takeIf { it.isNotBlank() } ?: "No detail supplied."
+        return root.javaClass.simpleName + ": " + message
     }
 
     companion object {
