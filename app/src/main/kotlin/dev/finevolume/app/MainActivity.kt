@@ -85,6 +85,9 @@ class MainActivity : ComponentActivity() {
                         onOpenAccessibilitySettings = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         },
+                        onOpenDeveloperOptions = {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                        },
                         onPairEmbeddedAdb = viewModel::pairEmbeddedAdb,
                         onReconnectEmbeddedAdb = viewModel::reconnectEmbeddedAdb,
                         onDisconnectEmbeddedAdb = viewModel::disconnectEmbeddedAdb,
@@ -116,6 +119,7 @@ fun MainScreen(
     onRunDiagnostics: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
+    onOpenDeveloperOptions: () -> Unit,
     onPairEmbeddedAdb: (Int, String) -> Unit,
     onReconnectEmbeddedAdb: (Int?) -> Unit,
     onDisconnectEmbeddedAdb: () -> Unit,
@@ -160,7 +164,8 @@ fun MainScreen(
                 onReconnect = onReconnectEmbeddedAdb,
                 onDisconnect = onDisconnectEmbeddedAdb,
                 onForgetPairing = onForgetPairing,
-                onOpenAccessibilitySettings = onOpenAccessibilitySettings
+                onOpenAccessibilitySettings = onOpenAccessibilitySettings,
+                onOpenDeveloperOptions = onOpenDeveloperOptions
             )
 
             ConfigurationCard(
@@ -211,7 +216,8 @@ fun WirelessDebuggingCard(
     onReconnect: (Int?) -> Unit,
     onDisconnect: () -> Unit,
     onForgetPairing: () -> Unit,
-    onOpenAccessibilitySettings: () -> Unit
+    onOpenAccessibilitySettings: () -> Unit,
+    onOpenDeveloperOptions: () -> Unit
 ) {
     var pairingPort by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
     var pairingCode by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
@@ -334,6 +340,13 @@ fun WirelessDebuggingCard(
                         keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
                     )
                 )
+            }
+
+            OutlinedButton(
+                onClick = onOpenDeveloperOptions,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Open Developer Options")
             }
 
             OutlinedButton(
