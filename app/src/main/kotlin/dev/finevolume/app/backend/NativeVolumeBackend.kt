@@ -55,7 +55,7 @@ class NativeVolumeBackend @Inject constructor(
             isBitPerfect = false,  // Android always mixes; no exclusive output mode
             backendType = BackendType.NATIVE,
             limitedReason = "Native Android volume provides $max hardware steps (0–$max). " +
-                "This mode works without Shizuku or root; Android does not expose public per-app sub-step gain control.",
+                "This mode works without Wireless Debugging or root; Android does not expose public per-app sub-step gain control.",
         )
     }
 }
