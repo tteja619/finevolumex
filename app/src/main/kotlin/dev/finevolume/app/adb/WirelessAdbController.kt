@@ -407,6 +407,17 @@ class WirelessAdbController @Inject constructor(
         }
     }
 
+    suspend fun setLiveCaptionEnabled(enabled: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        val result = runCatching {
+            check(status.value.isReady) { "Wireless ADB helper is not connected." }
+            command(JSONObject().put("command", "set_live_caption").put("enabled", enabled))
+        }
+        result.exceptionOrNull()?.let { error ->
+            if (status.value.isReady) disconnectAndFallback(error.message ?: "Live Caption settings update failed.")
+        }
+        result.map { Unit }
+    }
+
     private suspend fun reapplyPersistedGains() {
         command(
             JSONObject()
