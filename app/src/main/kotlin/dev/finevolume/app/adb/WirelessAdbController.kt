@@ -126,7 +126,7 @@ class WirelessAdbController @Inject constructor(
             val error = IllegalStateException("Wireless Debugging is switched off. Enable it in Developer Options before pairing.")
             _status.value = WirelessAdbStatus(
                 stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
-                message = error.message ?: "Wireless Debugging is off.",
+                message = describeError(error),
                 lastError = describeError(error)
             )
             return Result.failure(error)
@@ -196,7 +196,7 @@ class WirelessAdbController @Inject constructor(
                             }
                         },
                         onFailure = { error ->
-                            disconnectAndFallback(error.message ?: "Wireless ADB connection was lost.")
+                            disconnectAndFallback(describeError(error))
                         }
                     )
                     delay(8_000L)
@@ -227,7 +227,7 @@ class WirelessAdbController @Inject constructor(
                     _status.value = WirelessAdbStatus(
                         stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
                         message = "Waiting for Wireless Debugging. Turn it on in Developer Options; FineVolume will reconnect automatically.",
-                        lastError = error.message ?: error.javaClass.simpleName
+                        lastError = describeError(error)
                     )
                 }.isSuccess
 
@@ -397,7 +397,7 @@ class WirelessAdbController @Inject constructor(
             }
         }
         result.exceptionOrNull()?.let { error ->
-            if (status.value.isReady) disconnectAndFallback(error.message ?: "Media gain IPC failed.")
+            if (status.value.isReady) disconnectAndFallback(describeError(error))
         }
         result
     }
@@ -417,7 +417,7 @@ class WirelessAdbController @Inject constructor(
             }
         }
         result.exceptionOrNull()?.let { error ->
-            if (status.value.isReady) disconnectAndFallback(error.message ?: "Per-app gain IPC failed.")
+            if (status.value.isReady) disconnectAndFallback(describeError(error))
         }
         result
     }
@@ -452,7 +452,7 @@ class WirelessAdbController @Inject constructor(
             command(JSONObject().put("command", "set_live_caption").put("enabled", enabled))
         }
         result.exceptionOrNull()?.let { error ->
-            if (status.value.isReady) disconnectAndFallback(error.message ?: "Live Caption settings update failed.")
+            if (status.value.isReady) disconnectAndFallback(describeError(error))
         }
         result.map { Unit }
     }
