@@ -255,7 +255,8 @@ class VolumeOverlayController @Inject constructor(
                             },
                             resolution = settings.mediaResolution,
                             hapticLevel = settings.hapticLevel,
-                            hapticFeedbackManager = hapticFeedbackManager
+                            hapticFeedbackManager = hapticFeedbackManager,
+                            appVolumeManager = appVolumeManager
                         )
                     }
                 }
@@ -504,11 +505,13 @@ fun CollapsedVolumeOverlay(
     onInteraction: () -> Unit,
     resolution: Int = 120,
     hapticLevel: Int = 1,
-    hapticFeedbackManager: HapticFeedbackManager? = null
+    hapticFeedbackManager: HapticFeedbackManager? = null,
+    appVolumeManager: AppVolumeManager
 ) {
     // Collect the volume reactively so recomposition happens on every update
     val volume by volumeFlow.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
     var isCaptionActive by remember { mutableStateOf(LiveCaptionHelper.isEnabled(context)) }
 
     DisposableEffect(context) {
@@ -675,7 +678,8 @@ fun ExpandedVolumeDialog(
     val resolution = settings.mediaResolution.coerceAtLeast(1)
     val hapticLevel = settings.hapticLevel
     val activeApps by appVolumeManager.activeAppSessions.collectAsState()
-    val isWirelessAdbReady = remember(appVolumeManager) { appVolumeManager.isWirelessAdbReady() }
+    val wirelessAdbStatus by appVolumeManager.wirelessAdbStatus.collectAsState()
+    val isWirelessAdbReady = wirelessAdbStatus.isReady
 
     // Collect media volume reactively
     val mediaVolume by volumeFlow.collectAsState()
