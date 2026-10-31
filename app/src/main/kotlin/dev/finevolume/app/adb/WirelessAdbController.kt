@@ -2,6 +2,7 @@ package dev.finevolume.app.adb
 
 import android.content.Context
 import android.os.Build
+import android.provider.Settings
 import android.net.wifi.WifiManager
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -121,6 +122,15 @@ class WirelessAdbController @Inject constructor(
         if (pairingPort !in 1..65535) {
             return Result.failure(IllegalArgumentException("Enter the pairing port shown by Android."))
         }
+        if (wirelessDebuggingEnabled() == false) {
+            val error = IllegalStateException("Wireless Debugging is switched off. Enable it in Developer Options before pairing.")
+            _status.value = WirelessAdbStatus(
+                stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
+                message = error.message ?: "Wireless Debugging is off.",
+                lastError = describeError(error)
+            )
+            return Result.failure(error)
+        }
         if (!PAIRING_CODE.matches(pairingCode)) {
             return Result.failure(IllegalArgumentException("Enter the six-digit pairing code shown by Android."))
         }
@@ -157,7 +167,7 @@ class WirelessAdbController @Inject constructor(
                 _status.value = WirelessAdbStatus(
                     stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
                     message = "Pairing is saved. FineVolume will connect when Wireless Debugging is available.",
-                    lastError = error.message ?: error.javaClass.simpleName
+                    lastError = describeError(error)
                 )
             }
             Result.success(Unit)
@@ -197,6 +207,16 @@ class WirelessAdbController @Inject constructor(
                     _status.value = WirelessAdbStatus(
                         stage = WirelessAdbStage.NOT_PAIRED,
                         message = "Pair once from Android Developer Options. Native volume control remains available."
+                    )
+                    delay(10_000L)
+                    continue
+                }
+
+                if (wirelessDebuggingEnabled() == false) {
+                    _status.value = WirelessAdbStatus(
+                        stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
+                        message = "Wireless Debugging is off. Enable it in Developer Options; FineVolume is waiting without attempting a connection.",
+                        lastError = "adb_wifi_enabled=0"
                     )
                     delay(10_000L)
                     continue
@@ -243,8 +263,21 @@ class WirelessAdbController @Inject constructor(
         }
     }
 
+    private fun wirelessDebuggingEnabled(): Boolean? {
+        return runCatching {
+            when (Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", -1)) {
+                0 -> false
+                1 -> true
+                else -> null
+            }
+        }.getOrNull()
+    }
+
     private suspend fun connectAndStartHelper() {
         if (status.value.isReady) return
+        if (wirelessDebuggingEnabled() == false) {
+            throw IllegalStateException("Wireless Debugging is off. Enable it in Developer Options.")
+        }
         if (!isPaired()) throw IllegalStateException("FineVolume has not been paired with Wireless Debugging.")
 
         if (!connecting.compareAndSet(false, true)) {
