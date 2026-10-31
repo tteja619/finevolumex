@@ -13,8 +13,8 @@ android {
         applicationId = "dev.finevolume.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -28,7 +28,6 @@ android {
 
     buildFeatures {
         compose = true
-        aidl = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
@@ -65,11 +64,12 @@ dependencies {
     // DataStore (Preferences)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // Shizuku
-    implementation(libs.shizuku.api)
-    implementation(libs.shizuku.provider)
+    // Embedded ADB client: TLS pairing, persistent ADB key, mDNS connect and shell streams.
+    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
+    implementation("com.github.MuntashirAkon:sun-security-android:1.1")
+    implementation("org.conscrypt:conscrypt-android:2.5.3")
 
-    // Hidden API bypass
+    // Hidden API bridge used only inside FineVolume's own ADB-shell app_process helper.
     implementation(libs.hidden.api.bypass)
 
     // Coroutines
@@ -95,17 +95,10 @@ tasks.register("copyArtifactsToDesktop") {
                 val targetName = if (apkFile.name.contains("release")) "FineVolume-release.apk" else "FineVolume-debug.apk"
                 apkFile.copyTo(File(desktop, targetName), overwrite = true)
             }
-            fileTree(layout.buildDirectory.dir("outputs/bundle")).matching {
-                include("**/*.aab")
-            }.forEach { aabFile ->
-                val targetName = if (aabFile.name.contains("release")) "FineVolume-release.aab" else "FineVolume-debug.aab"
-                aabFile.copyTo(File(desktop, targetName), overwrite = true)
-            }
         }
     }
 }
 
-tasks.matching { it.name.startsWith("assemble") || it.name.startsWith("bundle") }.configureEach {
+tasks.matching { it.name.startsWith("assemble") }.configureEach {
     finalizedBy("copyArtifactsToDesktop")
 }
-
