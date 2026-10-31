@@ -13,8 +13,8 @@ android {
         applicationId = "dev.finevolume.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -65,9 +65,9 @@ dependencies {
     // DataStore (Preferences)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // Shizuku
-    implementation(libs.shizuku.api)
-    implementation(libs.shizuku.provider)
+    // Embedded ADB over Android Wireless Debugging (SPAKE2 + TLS 1.3)
+    implementation("com.flyfishxu:kadb:2.1.5")
+    implementation("com.flyfishxu:kadb-mdns:2.1.5")
 
     // Hidden API bypass
     implementation(libs.hidden.api.bypass)
