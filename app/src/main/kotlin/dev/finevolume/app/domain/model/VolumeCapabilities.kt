@@ -6,8 +6,8 @@ package dev.finevolume.app.domain.model
 enum class BackendType {
     /** Standard AudioManager.setStreamVolume() — always available */
     NATIVE,
-    /** Shizuku-based IPlayer session gain + NativeVolumeBackend — Shizuku required */
-    SHIZUKU_PLAYER,
+    /** FineVolume's own ADB Wireless Debugging shell helper + native AudioManager */
+    WIRELESS_ADB_PLAYER,
     /** Read-only fallback — used when all write-capable backends fail */
     FALLBACK,
 }
