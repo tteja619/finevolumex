@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dagger.hilt.android.AndroidEntryPoint
+import dev.finevolume.app.adb.EmbeddedAdbStatus
 import dev.finevolume.app.domain.model.BackendType
 import dev.finevolume.app.domain.model.VolumeCapabilities
 import dev.finevolume.app.ui.theme.FineVolumeTheme
@@ -69,19 +70,20 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val settings by viewModel.settings.collectAsState()
                     val capabilities by viewModel.activeBackendCapabilities.collectAsState()
-                    val shizukuConnected by viewModel.isShizukuConnected.collectAsState()
-                    val shizukuPermission by viewModel.hasShizukuPermission.collectAsState()
+                    val adbStatus by viewModel.embeddedAdbStatus.collectAsState()
 
                     MainScreen(
                         settings = settings,
                         capabilities = capabilities,
-                        shizukuConnected = shizukuConnected,
-                        shizukuPermission = shizukuPermission,
+                        adbStatus = adbStatus,
                         onToggleEnabled = viewModel::updateIsEnabled,
                         onOpenAccessibilitySettings = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         },
-                        onRequestShizuku = { viewModel.requestShizukuPermission() },
+                        onPairEmbeddedAdb = viewModel::pairEmbeddedAdb,
+                        onReconnectEmbeddedAdb = viewModel::reconnectEmbeddedAdb,
+                        onDisconnectEmbeddedAdb = viewModel::disconnectEmbeddedAdb,
+                        onForgetPairing = viewModel::forgetEmbeddedAdbPairing,
                         onResolutionChange = viewModel::updateMediaResolution,
                         onIncrementChange = viewModel::updateMediaIncrement,
                         onLongPressIntervalChange = viewModel::updateLongPressRepeatInterval,
@@ -98,11 +100,13 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     settings: dev.finevolume.app.data.AppSettings,
     capabilities: VolumeCapabilities,
-    shizukuConnected: Boolean,
-    shizukuPermission: Boolean,
+    adbStatus: EmbeddedAdbStatus,
     onToggleEnabled: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onRequestShizuku: () -> Unit,
+    onPairEmbeddedAdb: (Int, String) -> Unit,
+    onReconnectEmbeddedAdb: (Int?) -> Unit,
+    onDisconnectEmbeddedAdb: () -> Unit,
+    onForgetPairing: () -> Unit,
     onResolutionChange: (Float) -> Unit,
     onIncrementChange: (Float) -> Unit,
     onLongPressIntervalChange: (Float) -> Unit,
@@ -133,12 +137,14 @@ fun MainScreen(
 
             BankingCompatibilityCard()
 
-            StatusCard(
-                shizukuConnected = shizukuConnected,
-                shizukuPermission = shizukuPermission,
+            WirelessDebuggingCard(
+                status = adbStatus,
                 capabilities = capabilities,
-                onOpenAccessibilitySettings = onOpenAccessibilitySettings,
-                onRequestShizuku = onRequestShizuku
+                onPair = onPairEmbeddedAdb,
+                onReconnect = onReconnectEmbeddedAdb,
+                onDisconnect = onDisconnectEmbeddedAdb,
+                onForgetPairing = onForgetPairing,
+                onOpenAccessibilitySettings = onOpenAccessibilitySettings
             )
 
             ConfigurationCard(
@@ -179,82 +185,173 @@ fun MainScreen(
 }
 
 @Composable
-fun StatusCard(
-    shizukuConnected: Boolean,
-    shizukuPermission: Boolean,
+fun WirelessDebuggingCard(
+    status: EmbeddedAdbStatus,
     capabilities: VolumeCapabilities,
-    onOpenAccessibilitySettings: () -> Unit,
-    onRequestShizuku: () -> Unit
+    onPair: (Int, String) -> Unit,
+    onReconnect: (Int?) -> Unit,
+    onDisconnect: () -> Unit,
+    onForgetPairing: () -> Unit,
+    onOpenAccessibilitySettings: () -> Unit
 ) {
+    var pairingPort by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var pairingCode by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var connectionPort by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+
+    val pairingPortValue = pairingPort.toIntOrNull()
+    val manualConnectPort = connectionPort.toIntOrNull()
+    val canPair = pairingPortValue != null && pairingPortValue in 1..65535 &&
+        pairingCode.matches(Regex("\\d{6}"))
+    val stateColor = when (status.phase) {
+        dev.finevolume.app.adb.EmbeddedAdbPhase.CONNECTED -> Color(0xFF4CAF50)
+        dev.finevolume.app.adb.EmbeddedAdbPhase.FAILED -> MaterialTheme.colorScheme.error
+        dev.finevolume.app.adb.EmbeddedAdbPhase.PAIRING,
+        dev.finevolume.app.adb.EmbeddedAdbPhase.CONNECTING,
+        dev.finevolume.app.adb.EmbeddedAdbPhase.DISCOVERING -> MaterialTheme.colorScheme.primary
+        dev.finevolume.app.adb.EmbeddedAdbPhase.DISCONNECTED -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         shape = RoundedCornerShape(24.dp)
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text(
-                "System Status",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Backend Status
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = if (capabilities.backendType == BackendType.SHIZUKU_PLAYER) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    imageVector = when (status.phase) {
+                        dev.finevolume.app.adb.EmbeddedAdbPhase.CONNECTED -> Icons.Default.CheckCircle
+                        dev.finevolume.app.adb.EmbeddedAdbPhase.FAILED -> Icons.Default.Warning
+                        else -> Icons.Default.Warning
+                    },
                     contentDescription = null,
-                    tint = if (capabilities.backendType == BackendType.SHIZUKU_PLAYER) Color(0xFF4CAF50) else Color(0xFFFF9800),
-                    modifier = Modifier.size(24.dp)
+                    tint = stateColor,
+                    modifier = Modifier.size(28.dp)
                 )
                 Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text("Active Backend", fontWeight = FontWeight.Medium)
-                    Text(
-                        text = capabilities.backendType.name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Shizuku
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Shizuku Permission", fontWeight = FontWeight.Medium)
                     Text(
-                        if (shizukuPermission) "Granted" else if (shizukuConnected) "Action Required" else "Not Connected",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        "FineVolume Wireless Debugging",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
                     )
-                }
-                if (!shizukuPermission && shizukuConnected) {
-                    Button(onClick = onRequestShizuku, shape = RoundedCornerShape(12.dp)) {
-                        Text("Grant")
-                    }
+                    Text("Independent ADB engine", style = MaterialTheme.typography.bodySmall)
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                status.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
 
-            Button(
+            Text(
+                "Active backend: " + capabilities.backendType.name +
+                    "  •  " + (if (status.audioHelperReady) "ADB audio helper active" else "Native Android controls active"),
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.audioHelperReady) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary
+            )
+
+            if (status.host != null && status.port != null) {
+                Text(
+                    "ADB endpoint: " + status.host + ":" + status.port +
+                        (status.shellUid?.let { "  •  UID " + it } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (!status.detail.isNullOrBlank()) {
+                Text(
+                    status.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            if (status.phase != dev.finevolume.app.adb.EmbeddedAdbPhase.CONNECTED) {
+                Text(
+                    "First-time setup: open Developer Options, enable Wireless Debugging, then choose Pair device with pairing code. Keep that pairing dialog visible and enter its pairing port and six-digit code below. FineVolume stores its own ADB key encrypted with Android Keystore.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = pairingPort,
+                    onValueChange = { pairingPort = it.filter(Char::isDigit).take(5) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Wireless Debugging pairing port") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    )
+                )
+                OutlinedTextField(
+                    value = pairingCode,
+                    onValueChange = { pairingCode = it.filter(Char::isDigit).take(6) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Six-digit pairing code") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
+                    )
+                )
+                Button(
+                    onClick = { onPair(pairingPortValue ?: -1, pairingCode) },
+                    enabled = canPair && status.phase != dev.finevolume.app.adb.EmbeddedAdbPhase.PAIRING &&
+                        status.phase != dev.finevolume.app.adb.EmbeddedAdbPhase.CONNECTING,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Pair FineVolume")
+                }
+
+                OutlinedTextField(
+                    value = connectionPort,
+                    onValueChange = { connectionPort = it.filter(Char::isDigit).take(5) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Optional ADB connection port (not pairing port)") },
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    )
+                )
+            }
+
+            OutlinedButton(
                 onClick = onOpenAccessibilitySettings,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Enable Accessibility Service")
             }
+
+            OutlinedButton(
+                onClick = {
+                    onReconnect(manualConnectPort?.takeIf { it in 1..65535 })
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = status.pairedKeyStored &&
+                    status.phase != dev.finevolume.app.adb.EmbeddedAdbPhase.PAIRING &&
+                    status.phase != dev.finevolume.app.adb.EmbeddedAdbPhase.CONNECTING
+            ) {
+                Text("Reconnect / Restart Audio Helper")
+            }
+
+            if (status.isConnected) {
+                TextButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
+                    Text("Disconnect")
+                }
+            }
+            if (status.pairedKeyStored) {
+                TextButton(onClick = onForgetPairing, modifier = Modifier.fillMaxWidth()) {
+                    Text("Forget saved pairing")
+                }
+            }
+
+            Text(
+                "Pairing and connection are separate ADB endpoints. FineVolume will not toggle Wireless Debugging off/on or run a continuous restart loop. If the helper fails, system volume continues through Android's native backend.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
