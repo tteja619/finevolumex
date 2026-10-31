@@ -412,62 +412,26 @@ object LiveCaptionHelper {
         }
     }
 
-    fun toggle(context: Context, onStateChanged: (Boolean) -> Unit) {
-        val currentState = isEnabled(context)
-        val targetState = !currentState
+    suspend fun toggle(
+        context: Context,
+        onStateChanged: (Boolean) -> Unit,
+        setWithWirelessAdb: suspend (Boolean) -> Boolean
+    ) {
+        val targetState = !isEnabled(context)
         val targetVal = if (targetState) 1 else 0
-        var toggled = false
 
-        // 1. Try direct Settings.Secure write (works if WRITE_SECURE_SETTINGS is granted)
-        try {
-            Settings.Secure.putInt(context.contentResolver, "odi_captions_enabled", targetVal)
-            Settings.Secure.putInt(context.contentResolver, "accessibility_captioning_enabled", targetVal)
-            toggled = true
-        } catch (_: Throwable) {}
+        // Try the public Settings API first. It normally requires privileged
+        // WRITE_SECURE_SETTINGS and will fail for an ordinary installed app.
+        val directWrite = runCatching {
+            val first = Settings.Secure.putInt(context.contentResolver, "odi_captions_enabled", targetVal)
+            val second = Settings.Secure.putInt(context.contentResolver, "accessibility_captioning_enabled", targetVal)
+            first && second
+        }.getOrDefault(false)
 
-        // 2. Try Shizuku shell process via reflection if available and granted
-        if (!toggled) {
-            try {
-                if (rikka.shizuku.Shizuku.pingBinder() &&
-                    rikka.shizuku.Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    val newProcMethod = rikka.shizuku.Shizuku::class.java.getDeclaredMethod(
-                        "newProcess",
-                        Array<String>::class.java,
-                        Array<String>::class.java,
-                        String::class.java
-                    )
-                    newProcMethod.isAccessible = true
-                    val p = newProcMethod.invoke(
-                        null,
-                        arrayOf("settings", "put", "secure", "odi_captions_enabled", targetVal.toString()),
-                        null,
-                        null
-                    ) as? java.lang.Process
-                    p?.waitFor()
-
-                    val p2 = newProcMethod.invoke(
-                        null,
-                        arrayOf("settings", "put", "secure", "accessibility_captioning_enabled", targetVal.toString()),
-                        null,
-                        null
-                    ) as? java.lang.Process
-                    p2?.waitFor()
-                    toggled = true
-                }
-            } catch (_: Throwable) {}
-        }
-
-        // 3. Try Root su if not toggled
-        if (!toggled) {
-            try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "settings put secure odi_captions_enabled $targetVal; settings put secure accessibility_captioning_enabled $targetVal"))
-                if (p.waitFor() == 0) {
-                    toggled = true
-                }
-            } catch (_: Throwable) {}
-        }
-
-        if (toggled) {
+        // If public access is denied, use FineVolume's own user-approved ADB
+        // shell helper. No Shizuku or su/root fallback is used.
+        val changed = directWrite || runCatching { setWithWirelessAdb(targetState) }.getOrDefault(false)
+        if (changed) {
             onStateChanged(targetState)
             Toast.makeText(
                 context,
@@ -477,7 +441,6 @@ object LiveCaptionHelper {
             return
         }
 
-        // 4. Intent fallback: Launch system Live Caption / caption settings directly
         val intents = listOf(
             Intent("com.android.settings.action.LIVE_CAPTION"),
             Intent(Settings.ACTION_CAPTIONING_SETTINGS),
@@ -487,7 +450,7 @@ object LiveCaptionHelper {
             try {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(intent)
-                Toast.makeText(context, "Opening Live Caption Settings", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Open FineVolume's Wireless ADB setup to enable shell controls, or use system caption settings.", Toast.LENGTH_LONG).show()
                 return
             } catch (_: Throwable) {}
         }
@@ -654,8 +617,10 @@ fun CollapsedVolumeOverlay(
                     .background(if (isCaptionActive) colors.activeColor else colors.inactiveColor)
                     .clickable {
                         onInteraction()
-                        LiveCaptionHelper.toggle(context) { newState ->
-                            isCaptionActive = newState
+                        scope.launch {
+                            LiveCaptionHelper.toggle(context, { newState ->
+                                isCaptionActive = newState
+                            }) { enabled -> appVolumeManager.setLiveCaptionEnabled(enabled).isSuccess }
                         }
                     }
             ) {
@@ -703,13 +668,14 @@ fun ExpandedVolumeDialog(
     hapticFeedbackManager: HapticFeedbackManager
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     val settings by settingsRepository.settings.collectAsState(initial = settingsRepository.cachedSettings)
     val resolution = settings.mediaResolution.coerceAtLeast(1)
     val hapticLevel = settings.hapticLevel
     val activeApps by appVolumeManager.activeAppSessions.collectAsState()
-    val isShizukuReady = remember(appVolumeManager) { appVolumeManager.isShizukuReady() }
+    val isWirelessAdbReady = remember(appVolumeManager) { appVolumeManager.isWirelessAdbReady() }
 
     // Collect media volume reactively
     val mediaVolume by volumeFlow.collectAsState()
@@ -1057,7 +1023,7 @@ fun ExpandedVolumeDialog(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    if (isShizukuReady) {
+                    if (isWirelessAdbReady) {
                         if (activeApps.isNotEmpty()) {
                             activeApps.forEach { app ->
                                 PixelHorizontalSlider(
@@ -1129,7 +1095,7 @@ fun ExpandedVolumeDialog(
                                 }
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "Controlling individual app volumes independently requires elevated Shizuku access so Android allows audio session attenuation.",
+                                    text = "FineVolume's independent player controls need its own Wireless ADB shell helper. Pair FineVolume once from the Wireless Debugging card in the main app. Native system volume keeps working without pairing.",
                                     fontSize = 12.sp,
                                     lineHeight = 16.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1138,22 +1104,17 @@ fun ExpandedVolumeDialog(
                                 Button(
                                     onClick = {
                                         try {
-                                            val intent = context.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-                                            if (intent != null) {
-                                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                context.startActivity(intent)
-                                            } else {
-                                                val browserIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://shizuku.rikka.app/"))
-                                                browserIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                                context.startActivity(browserIntent)
+                                            val setupIntent = Intent(context, dev.finevolume.app.MainActivity::class.java).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                                             }
+                                            context.startActivity(setupIntent)
                                         } catch (_: Throwable) {}
                                     },
                                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                                     shape = RoundedCornerShape(10.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                                 ) {
-                                    Text("Open Shizuku", fontSize = 12.sp)
+                                    Text("Open FineVolume setup", fontSize = 12.sp)
                                 }
                             }
                         }
@@ -1174,8 +1135,10 @@ fun ExpandedVolumeDialog(
                                 .background(if (isCaptionActive) colors.activeColor else colors.inactiveColor)
                                 .clickable {
                                     onInteraction()
-                                    LiveCaptionHelper.toggle(context) { newState ->
-                                        isCaptionActive = newState
+                                    scope.launch {
+                                        LiveCaptionHelper.toggle(context, { newState ->
+                                            isCaptionActive = newState
+                                        }) { enabled -> appVolumeManager.setLiveCaptionEnabled(enabled).isSuccess }
                                     }
                                 }
                         ) {
