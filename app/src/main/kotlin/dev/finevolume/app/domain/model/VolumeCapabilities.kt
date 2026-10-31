@@ -7,7 +7,7 @@ enum class BackendType {
     /** Standard AudioManager.setStreamVolume() — always available */
     NATIVE,
     /** Shizuku-based IPlayer session gain + NativeVolumeBackend — Shizuku required */
-    SHIZUKU_PLAYER,
+    ADB_PLAYER,
     /** Read-only fallback — used when all write-capable backends fail */
     FALLBACK,
 }
