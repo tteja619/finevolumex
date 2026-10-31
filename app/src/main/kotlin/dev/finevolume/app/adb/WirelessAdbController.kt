@@ -2,7 +2,7 @@ package dev.finevolume.app.adb
 
 import android.content.Context
 import android.os.Build
-import android.os.Process
+import android.net.wifi.WifiManager
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.github.muntashirakon.adb.AdbStream
@@ -130,22 +130,34 @@ class WirelessAdbController @Inject constructor(
         )
 
         return withContext(Dispatchers.IO) {
-            runCatching {
+            val pairing = runCatching {
                 disconnectTransport()
                 manager().pairWithLocalDevice(pairingPort, pairingCode)
                 preferences.edit().putBoolean(KEY_PAIRED, true).apply()
-                _status.value = WirelessAdbStatus(
-                    stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
-                    message = "Pairing completed. Connecting to Wireless Debugging…"
-                )
-                connectAndStartHelper()
-            }.onFailure { error ->
+            }
+            if (pairing.isFailure) {
+                val error = pairing.exceptionOrNull()!!
                 _status.value = WirelessAdbStatus(
                     stage = WirelessAdbStage.ERROR,
                     message = "ADB pairing failed.",
                     lastError = error.message ?: error.javaClass.simpleName
                 )
+                return@withContext Result.failure(error)
             }
+
+            _status.value = WirelessAdbStatus(
+                stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
+                message = "Pairing completed. Connecting to Wireless Debugging…"
+            )
+            runCatching { connectAndStartHelper() }.onFailure { error ->
+                disconnectTransport()
+                _status.value = WirelessAdbStatus(
+                    stage = WirelessAdbStage.WAITING_FOR_WIRELESS_DEBUGGING,
+                    message = "Pairing is saved. FineVolume will connect when Wireless Debugging is available.",
+                    lastError = error.message ?: error.javaClass.simpleName
+                )
+            }
+            Result.success(Unit)
         }
     }
 
@@ -239,13 +251,25 @@ class WirelessAdbController @Inject constructor(
         }
 
         try {
+            disconnectTransport()
             _status.value = WirelessAdbStatus(
                 stage = WirelessAdbStage.CONNECTING,
                 message = "Discovering this phone's Wireless Debugging TLS service…"
             )
 
             val manager = manager()
-            val connected = manager.connectToLocalWirelessDebugging(context, CONNECT_TIMEOUT_MS)
+            val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            val multicastLock = runCatching {
+                wifi?.createMulticastLock("FineVolumeWirelessAdbDiscovery")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }.getOrNull()
+            val connected = try {
+                manager.connectToLocalWirelessDebugging(context, CONNECT_TIMEOUT_MS)
+            } finally {
+                runCatching { if (multicastLock?.isHeld == true) multicastLock.release() }
+            }
             check(connected && manager.isConnected) {
                 "Wireless Debugging TLS service was not discovered. Ensure Wireless Debugging is enabled and the phone is unlocked."
             }
@@ -288,6 +312,9 @@ class WirelessAdbController @Inject constructor(
             reapplyPersistedGains()
             val health = command(JSONObject().put("command", "ping"))
             _status.value = status.value.copy(activeMediaSessions = health.optInt("sessions", 0))
+        } catch (error: Throwable) {
+            disconnectTransport()
+            throw error
         } finally {
             connecting.set(false)
         }
@@ -323,17 +350,21 @@ class WirelessAdbController @Inject constructor(
     }
 
     suspend fun setMediaGain(gain: Float): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        val result = runCatching {
             val safeGain = gain.coerceIn(0f, 1f)
             preferences.edit().putFloat(KEY_MEDIA_GAIN, safeGain).apply()
             if (status.value.isReady) {
                 command(JSONObject().put("command", "set_media_gain").put("gain", safeGain))
             }
         }
+        result.exceptionOrNull()?.let { error ->
+            if (status.value.isReady) disconnectAndFallback(error.message ?: "Media gain IPC failed.")
+        }
+        result
     }
 
     suspend fun setAppGain(packageName: String, gain: Float): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        val result = runCatching {
             require(packageName.isNotBlank())
             val safeGain = gain.coerceIn(0f, 1f)
             preferences.edit().putFloat(APP_GAIN_PREFIX + packageName, safeGain).apply()
@@ -346,6 +377,10 @@ class WirelessAdbController @Inject constructor(
                 )
             }
         }
+        result.exceptionOrNull()?.let { error ->
+            if (status.value.isReady) disconnectAndFallback(error.message ?: "Per-app gain IPC failed.")
+        }
+        result
     }
 
     suspend fun getAppGain(packageName: String): Float = withContext(Dispatchers.IO) {
