@@ -3,15 +3,13 @@ package dev.finevolume.app.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.finevolume.app.adb.EmbeddedAdbManager
+import dev.finevolume.app.adb.EmbeddedAdbStatus
 import dev.finevolume.app.backend.BackendSelector
 import dev.finevolume.app.data.AppSettings
 import dev.finevolume.app.data.SettingsRepository
-import dev.finevolume.app.diagnostics.FineVolumeDiagnostics
 import dev.finevolume.app.domain.model.BackendType
 import dev.finevolume.app.domain.model.VolumeCapabilities
-import dev.finevolume.app.shizuku.ShizukuManager
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -23,8 +21,7 @@ import javax.inject.Inject
 class MainViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val backendSelector: BackendSelector,
-    private val shizukuManager: ShizukuManager,
-    private val diagnostics: FineVolumeDiagnostics
+    private val embeddedAdbManager: EmbeddedAdbManager
 ) : ViewModel() {
 
     val settings: StateFlow<AppSettings> = settingsRepository.settings
@@ -38,79 +35,53 @@ class MainViewModel @Inject constructor(
             VolumeCapabilities(15, false, false, BackendType.NATIVE, null)
         )
 
-    val isShizukuConnected: StateFlow<Boolean> = shizukuManager.isConnected
-    val hasShizukuPermission: StateFlow<Boolean> = shizukuManager.permissionGranted
-    val shizukuServerUid: StateFlow<Int?> = shizukuManager.serverUid
-    val shizukuLastError: StateFlow<String?> = shizukuManager.lastError
-    val shizukuServiceStatus: StateFlow<String> = backendSelector.shizukuServiceStatus
+    val embeddedAdbStatus: StateFlow<EmbeddedAdbStatus> = embeddedAdbManager.status
 
-    private val _diagnosticReport = MutableStateFlow(
-        diagnostics.lastReport() ?: "No diagnostic report yet. Run checks to inspect native audio and the optional Shizuku engine."
-    )
-    val diagnosticReport: StateFlow<String> = _diagnosticReport
-
-    private val _diagnosticsRunning = MutableStateFlow(false)
-    val diagnosticsRunning: StateFlow<Boolean> = _diagnosticsRunning
-
-    fun refreshRuntimeState() {
-        shizukuManager.refreshStatus()
-    }
-
-    fun runDiagnostics() {
-        if (_diagnosticsRunning.value) return
+    fun pairEmbeddedAdb(pairingPort: Int, pairingCode: String) {
         viewModelScope.launch {
-            _diagnosticsRunning.value = true
-            try {
-                _diagnosticReport.value = diagnostics.runChecks()
-            } catch (t: Throwable) {
-                _diagnosticReport.value = "Diagnostics failed: " +
-                    (t.message ?: t.javaClass.simpleName)
-            } finally {
-                _diagnosticsRunning.value = false
-            }
+            embeddedAdbManager.pairLocal(pairingPort, pairingCode)
         }
     }
 
-    fun retryShizukuEngine() {
-        shizukuManager.refreshStatus()
-        backendSelector.retryShizukuEngine()
+    fun reconnectEmbeddedAdb(manualConnectPort: Int? = null) {
         viewModelScope.launch {
-            delay(900L)
-            runDiagnostics()
+            embeddedAdbManager.reconnectLocal(manualConnectPort)
         }
+    }
+
+    fun autoReconnectIfPaired() {
+        if (!embeddedAdbManager.status.value.pairedKeyStored) return
+        if (embeddedAdbManager.status.value.isConnected) return
+        viewModelScope.launch {
+            embeddedAdbManager.reconnectLocal()
+        }
+    }
+
+    fun disconnectEmbeddedAdb() {
+        embeddedAdbManager.disconnect()
+    }
+
+    fun forgetEmbeddedAdbPairing() {
+        embeddedAdbManager.forgetPairing()
     }
 
     fun updateIsEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.updateIsEnabled(enabled)
-        }
+        viewModelScope.launch { settingsRepository.updateIsEnabled(enabled) }
     }
 
     fun updateMediaResolution(resolution: Float) {
-        viewModelScope.launch {
-            settingsRepository.updateMediaResolution(resolution.toInt())
-        }
+        viewModelScope.launch { settingsRepository.updateMediaResolution(resolution.toInt()) }
     }
 
     fun updateMediaIncrement(increment: Float) {
-        viewModelScope.launch {
-            settingsRepository.updateMediaIncrement(increment.toInt())
-        }
+        viewModelScope.launch { settingsRepository.updateMediaIncrement(increment.toInt()) }
     }
 
     fun updateLongPressRepeatInterval(ms: Float) {
-        viewModelScope.launch {
-            settingsRepository.updateLongPressRepeatInterval(ms.toInt())
-        }
+        viewModelScope.launch { settingsRepository.updateLongPressRepeatInterval(ms.toInt()) }
     }
 
     fun updateHapticEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsRepository.updateHapticLevel(if (enabled) 1 else 0)
-        }
-    }
-
-    fun requestShizukuPermission() {
-        shizukuManager.requestPermission()
+        viewModelScope.launch { settingsRepository.updateHapticLevel(if (enabled) 1 else 0) }
     }
 }
