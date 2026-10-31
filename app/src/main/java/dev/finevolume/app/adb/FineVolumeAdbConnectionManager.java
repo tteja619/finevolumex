@@ -31,7 +31,6 @@ import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Date;
-import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 import io.github.muntashirakon.adb.AbsAdbConnectionManager;
@@ -98,7 +97,7 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
         X509CertInfo info = new X509CertInfo();
         info.set("version", new CertificateVersion(CertificateVersion.V3));
         info.set("serialNumber",
-                new CertificateSerialNumber(new Random().nextInt() & Integer.MAX_VALUE));
+                new CertificateSerialNumber(nextSerialNumber()));
         info.set("algorithmID", new CertificateAlgorithmId(AlgorithmId.get(algorithm)));
         info.set("subject", new CertificateSubjectName(name));
         info.set("key", new CertificateX509Key(pair.getPublic()));
@@ -112,6 +111,14 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
 
         writeAtomically(keyFile, privateKey.getEncoded());
         writeAtomically(certificateFile, certificate.getEncoded());
+    }
+
+    private static int nextSerialNumber() {
+        int value;
+        do {
+            value = new SecureRandom().nextInt() & Integer.MAX_VALUE;
+        } while (value == 0);
+        return value;
     }
 
     private static byte[] readAll(File file) throws IOException {
@@ -159,7 +166,9 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
     }
 
     public void pairWithLocalDevice(int pairingPort, String pairingCode) throws Exception {
-        pair("127.0.0.1", pairingPort, pairingCode);
+        if (!pair("127.0.0.1", pairingPort, pairingCode)) {
+            throw new IOException("Android Wireless Debugging rejected the pairing code.");
+        }
     }
 
     public boolean connectToLocalWirelessDebugging(Context context, long timeoutMillis)
