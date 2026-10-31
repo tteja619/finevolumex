@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -49,6 +50,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dagger.hilt.android.AndroidEntryPoint
+import dev.finevolume.app.adb.WirelessAdbStage
+import dev.finevolume.app.adb.WirelessAdbStatus
 import dev.finevolume.app.domain.model.BackendType
 import dev.finevolume.app.domain.model.VolumeCapabilities
 import dev.finevolume.app.ui.theme.FineVolumeTheme
@@ -61,6 +64,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewModel.startWirelessAdbWatchdog()
+        ContextCompat.startForegroundService(this, Intent(this, dev.finevolume.app.service.VolumeControlForegroundService::class.java))
         setContent {
             FineVolumeTheme {
                 Surface(
@@ -69,19 +74,22 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val settings by viewModel.settings.collectAsState()
                     val capabilities by viewModel.activeBackendCapabilities.collectAsState()
-                    val shizukuConnected by viewModel.isShizukuConnected.collectAsState()
-                    val shizukuPermission by viewModel.hasShizukuPermission.collectAsState()
+                    val wirelessAdbStatus by viewModel.wirelessAdbStatus.collectAsState()
 
                     MainScreen(
                         settings = settings,
                         capabilities = capabilities,
-                        shizukuConnected = shizukuConnected,
-                        shizukuPermission = shizukuPermission,
+                        wirelessAdbStatus = wirelessAdbStatus,
                         onToggleEnabled = viewModel::updateIsEnabled,
                         onOpenAccessibilitySettings = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         },
-                        onRequestShizuku = { viewModel.requestShizukuPermission() },
+                        onOpenDeveloperOptions = {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                        },
+                        onPairWirelessAdb = viewModel::pairWirelessAdb,
+                        onReconnectWirelessAdb = viewModel::reconnectWirelessAdb,
+                        onForgetWirelessAdb = viewModel::forgetWirelessAdbPairing,
                         onResolutionChange = viewModel::updateMediaResolution,
                         onIncrementChange = viewModel::updateMediaIncrement,
                         onLongPressIntervalChange = viewModel::updateLongPressRepeatInterval,
@@ -98,11 +106,13 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     settings: dev.finevolume.app.data.AppSettings,
     capabilities: VolumeCapabilities,
-    shizukuConnected: Boolean,
-    shizukuPermission: Boolean,
+    wirelessAdbStatus: WirelessAdbStatus,
     onToggleEnabled: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onRequestShizuku: () -> Unit,
+    onOpenDeveloperOptions: () -> Unit,
+    onPairWirelessAdb: (String, String) -> Unit,
+    onReconnectWirelessAdb: () -> Unit,
+    onForgetWirelessAdb: () -> Unit,
     onResolutionChange: (Float) -> Unit,
     onIncrementChange: (Float) -> Unit,
     onLongPressIntervalChange: (Float) -> Unit,
@@ -126,19 +136,17 @@ fun MainScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            AppToggleCard(
-                isEnabled = settings.isEnabled,
-                onToggle = onToggleEnabled
-            )
-
+            AppToggleCard(isEnabled = settings.isEnabled, onToggle = onToggleEnabled)
             BankingCompatibilityCard()
 
-            StatusCard(
-                shizukuConnected = shizukuConnected,
-                shizukuPermission = shizukuPermission,
+            WirelessAdbStatusCard(
+                status = wirelessAdbStatus,
                 capabilities = capabilities,
+                onOpenDeveloperOptions = onOpenDeveloperOptions,
                 onOpenAccessibilitySettings = onOpenAccessibilitySettings,
-                onRequestShizuku = onRequestShizuku
+                onPair = onPairWirelessAdb,
+                onReconnect = onReconnectWirelessAdb,
+                onForget = onForgetWirelessAdb
             )
 
             ConfigurationCard(
@@ -166,7 +174,6 @@ fun MainScreen(
                 effectiveValue = null,
                 description = "Interval between volume steps while holding a button (ms). Lower = faster.",
                 onValueChange = onLongPressIntervalChange,
-                // Invert display: show it as "speed" — lower ms = faster, higher ms = slower
                 displayTransform = { ms -> ms.toInt().toString() + " ms" }
             )
 
@@ -179,74 +186,116 @@ fun MainScreen(
 }
 
 @Composable
-fun StatusCard(
-    shizukuConnected: Boolean,
-    shizukuPermission: Boolean,
+fun WirelessAdbStatusCard(
+    status: WirelessAdbStatus,
     capabilities: VolumeCapabilities,
+    onOpenDeveloperOptions: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onRequestShizuku: () -> Unit
+    onPair: (String, String) -> Unit,
+    onReconnect: () -> Unit,
+    onForget: () -> Unit
 ) {
+    var pairingPort by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var pairingCode by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    val ready = status.isReady
+    val statusColor = when (status.stage) {
+        WirelessAdbStage.READY -> Color(0xFF2E7D32)
+        WirelessAdbStage.PAIRING, WirelessAdbStage.CONNECTING, WirelessAdbStage.STARTING_HELPER -> MaterialTheme.colorScheme.primary
+        WirelessAdbStage.ERROR -> MaterialTheme.colorScheme.error
+        else -> Color(0xFFB26A00)
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         shape = RoundedCornerShape(24.dp)
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text(
-                "System Status",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Backend Status
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = if (capabilities.backendType == BackendType.SHIZUKU_PLAYER) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    imageVector = if (ready) Icons.Default.CheckCircle else Icons.Default.Warning,
                     contentDescription = null,
-                    tint = if (capabilities.backendType == BackendType.SHIZUKU_PLAYER) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                    tint = statusColor,
                     modifier = Modifier.size(24.dp)
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text("Active Backend", fontWeight = FontWeight.Medium)
-                    Text(
-                        text = capabilities.backendType.name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Shizuku
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Shizuku Permission", fontWeight = FontWeight.Medium)
+                    Text("FineVolume Wireless Debugging", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        if (shizukuPermission) "Granted" else if (shizukuConnected) "Action Required" else "Not Connected",
+                        text = if (ready) "Self-hosted shell engine connected" else "Independent ADB engine",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (!shizukuPermission && shizukuConnected) {
-                    Button(onClick = onRequestShizuku, shape = RoundedCornerShape(12.dp)) {
-                        Text("Grant")
-                    }
+            }
+
+            Text(status.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = "Active backend: " + capabilities.backendType.name +
+                    if (ready) "  •  Shell UID " + status.helperUid + "  •  " + status.activeMediaSessions + " media sessions"
+                    else "  •  Native Android controls active",
+                style = MaterialTheme.typography.labelMedium,
+                color = statusColor
+            )
+            status.lastError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            Text(
+                "First-time setup: open Developer Options, enable Wireless Debugging, then choose Pair device with pairing code. Keep the pairing dialog visible and enter its pairing port and six-digit code below. FineVolume stores its own ADB key privately.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedTextField(
+                value = pairingPort,
+                onValueChange = { pairingPort = it.filter(Char::isDigit).take(5) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Wireless Debugging pairing port") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            OutlinedTextField(
+                value = pairingCode,
+                onValueChange = { pairingCode = it.filter(Char::isDigit).take(6) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Six-digit pairing code") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+
+            Button(
+                onClick = { onPair(pairingPort, pairingCode) },
+                enabled = !ready && pairingPort.toIntOrNull() in 1..65535 && pairingCode.length == 6 &&
+                    status.stage != WirelessAdbStage.PAIRING,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(if (status.stage == WirelessAdbStage.PAIRING) "Pairing…" else "Pair FineVolume")
+            }
+
+            OutlinedButton(
+                onClick = onOpenDeveloperOptions,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Open Developer Options")
+            }
+
+            if (status.stage != WirelessAdbStage.NOT_PAIRED) {
+                OutlinedButton(
+                    onClick = onReconnect,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Reconnect / Restart Audio Helper")
+                }
+                TextButton(onClick = onForget, modifier = Modifier.align(Alignment.End)) {
+                    Text("Forget FineVolume pairing")
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
 
             Button(
                 onClick = onOpenAccessibilitySettings,
