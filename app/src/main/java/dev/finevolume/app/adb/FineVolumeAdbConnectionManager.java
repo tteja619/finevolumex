@@ -275,6 +275,10 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
             // The dependency may change implementation in a future release.
         } catch (NoSuchFieldException ignored) {
             // No static context cache in a future/fixed libadb release.
+        } catch (Throwable ignored) {
+            // Identity files and the Android Keystore key are already deleted.
+            // A cache-reset failure must not prevent the user from forgetting
+            // the old pairing; it is surfaced by the next explicit reconnect.
         }
 
         privateKey = null;
