@@ -83,7 +83,7 @@ class AdbPlayerBackend @Inject constructor(
             effectiveResolution = if (ready) 1000 else max,
             supportsSubStepGain = ready,
             isBitPerfect = false,
-            backendType = BackendType.SHIZUKU_PLAYER,
+            backendType = BackendType.ADB_PLAYER,
             limitedReason = if (ready) null else
                 "Embedded ADB audio helper is not connected. Native Android volume remains available ($max steps)."
         )
