@@ -279,7 +279,7 @@ class WirelessAdbController @Inject constructor(
                 message = "Starting FineVolume's shell-UID audio helper…"
             )
 
-            val stream = manager.openStream("shell,v2,raw:${helperCommand()}")
+            val stream = manager.openStream("shell:${helperCommand()}")
             helperStream = stream
             input = BufferedReader(InputStreamReader(stream.openInputStream(), Charsets.UTF_8))
             output = BufferedWriter(OutputStreamWriter(stream.openOutputStream(), Charsets.UTF_8))
