@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Audio and embedded Wireless Debugging client -->
+    <!-- Local ADB pairing, TLS connection and mDNS discovery -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -9,14 +9,6 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
-    <!-- Foreground service -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-
-    <!-- Notification (Android 13+) -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- NO INTERNET PERMISSION — this app is entirely offline -->
 
     <application
         android:name=".FineVolumeApp"
@@ -55,15 +47,7 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Foreground service for FineVolume audio helper lifecycle management -->
-        <service
-            android:name=".service.VolumeControlForegroundService"
-            android:foregroundServiceType="specialUse"
-            android:exported="false">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Volume control management for FineVolume" />
-        </service>
+
 
 
 
