@@ -11,6 +11,6 @@ data class AppSettings(
     val bitPerfectProtection: Boolean = true,
     val hapticLevel: Int = 0,
     val accelerationMode: AccelerationMode = AccelerationMode.EXPONENTIAL,
-    val shizukuEnabled: Boolean = true,
+    val wirelessAdbEnabled: Boolean = true,
     val isEnabled: Boolean = true
 )
