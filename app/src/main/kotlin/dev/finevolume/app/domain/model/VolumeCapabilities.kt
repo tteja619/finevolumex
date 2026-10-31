@@ -23,7 +23,7 @@ data class VolumeCapabilities(
     /**
      * The true number of distinguishable volume levels this backend provides.
      * = getStreamMaxVolume() for NativeVolumeBackend
-     * = up to 1000 for ShizukuPlayerBackend (float gain precision)
+     * = up to 1000 for WirelessAdbPlayerBackend (float gain precision)
      */
     val effectiveResolution: Int,
     /** Whether this backend applies per-session floating-point gain (sub-step precision) */
