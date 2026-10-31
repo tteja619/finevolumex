@@ -93,6 +93,11 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.autoReconnectIfPaired()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
