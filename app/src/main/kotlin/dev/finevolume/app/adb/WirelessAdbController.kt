@@ -529,11 +529,13 @@ class WirelessAdbController @Inject constructor(
     private fun rootCause(error: Throwable): Throwable {
         var current = error
         repeat(24) {
-            val next = when (current) {
-                is InvocationTargetException -> current.targetException ?: current.cause
-                else -> current.cause
-            } ?: return current
-            if (next === current) return current
+            val currentError: Throwable = current
+            val next: Throwable? = if (currentError is InvocationTargetException) {
+                currentError.targetException ?: currentError.cause
+            } else {
+                currentError.cause
+            }
+            if (next == null || next === currentError) return currentError
             current = next
         }
         return current
