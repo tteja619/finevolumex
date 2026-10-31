@@ -266,7 +266,7 @@ fun WirelessAdbStatusCard(
 
             Button(
                 onClick = { onPair(pairingPort, pairingCode) },
-                enabled = !ready && pairingPort.toIntOrNull() in 1..65535 && pairingCode.length == 6 &&
+                enabled = !ready && (pairingPort.toIntOrNull()?.let { it in 1..65535 } == true) && pairingCode.length == 6 &&
                     status.stage != WirelessAdbStage.PAIRING,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
