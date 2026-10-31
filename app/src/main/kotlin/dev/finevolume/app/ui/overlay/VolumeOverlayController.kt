@@ -764,7 +764,6 @@ fun ExpandedVolumeDialog(
 
     var isDialogVisible by remember { mutableStateOf(false) }
     val isDismissing = remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
     val openTime = remember { android.os.SystemClock.uptimeMillis() }
 
     val handleClose: () -> Unit = remember(onClose) {
