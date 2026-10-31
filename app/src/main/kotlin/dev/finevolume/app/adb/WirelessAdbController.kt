@@ -546,6 +546,7 @@ class WirelessAdbController @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "FineVolumeWirelessAdb"
         private const val PREFS = "finevolume_wireless_adb"
         private const val KEY_PAIRED = "paired"
         private const val KEY_MEDIA_GAIN = "media_gain"
