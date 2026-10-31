@@ -95,7 +95,7 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
         extensions.set("PrivateKeyUsage", new PrivateKeyUsageExtension(notBefore, notAfter));
 
         X509CertInfo info = new X509CertInfo();
-        info.set("version", new CertificateVersion(CertificateVersion.V3));
+        info.set("version", new CertificateVersion(2));
         info.set("serialNumber",
                 new CertificateSerialNumber(nextSerialNumber()));
         info.set("algorithmID", new CertificateAlgorithmId(AlgorithmId.get(algorithm)));
