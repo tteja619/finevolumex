@@ -2,6 +2,7 @@
 
 package io.github.muntashirakon.adb;
 
+import org.junit.After;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -23,6 +24,11 @@ import static org.junit.Assert.fail;
  */
 public class AdbStreamCloseTest {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+
+    @After
+    public void tearDown() {
+        executor.shutdownNow();
+    }
 
     @Test
     public void peerCloseAfterDataIsConsumedIsEof() throws Exception {
