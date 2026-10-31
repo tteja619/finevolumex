@@ -79,4 +79,8 @@ class AppVolumeManager @Inject constructor(
     }
 
     fun isWirelessAdbReady(): Boolean = wirelessAdbController.status.value.isReady
+
+    suspend fun setLiveCaptionEnabled(enabled: Boolean): Result<Unit> =
+        wirelessAdbController.setLiveCaptionEnabled(enabled)
 }
+
