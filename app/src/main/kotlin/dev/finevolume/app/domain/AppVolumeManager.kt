@@ -28,6 +28,7 @@ class AppVolumeManager @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val _activeAppSessions = MutableStateFlow<List<AppVolumeSession>>(emptyList())
     val activeAppSessions: StateFlow<List<AppVolumeSession>> = _activeAppSessions.asStateFlow()
+    val wirelessAdbStatus = wirelessAdbController.status
     private val appVolumeCache = ConcurrentHashMap<String, Float>()
 
     fun startObserving() {
