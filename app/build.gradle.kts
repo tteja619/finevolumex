@@ -65,7 +65,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
     // Embedded ADB client: TLS pairing, persistent ADB key, mDNS connect and shell streams.
-    implementation("com.github.SanniniciStyle.libadb-android:libadb:f0cbeec53046a2d8f7c3762b4a52c5ef30ccc62c")
+    implementation(project(":libadb"))
     implementation("com.github.MuntashirAkon:sun-security-android:1.1")
     implementation("org.conscrypt:conscrypt-android:2.5.3")
 
