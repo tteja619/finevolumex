@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/Android-10.0%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 10+"/>
   <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose"/>
   <img src="https://img.shields.io/badge/Design-Material%20You%20%2F%20Pixel-7C4DFF?style=flat-square" alt="Samsung One UI inspired"/>
-  <img src="https://img.shields.io/badge/Security-100%25%20Offline-00C853?style=flat-square" alt="100% Offline"/>
+  <img src="https://img.shields.io/badge/Security-Local%20ADB%20Only-00C853?style=flat-square" alt="Local ADB only"/>
   <img src="https://img.shields.io/badge/License-Apache%202.0-blue?style=flat-square" alt="License"/>
 </p>
 
@@ -31,7 +31,7 @@ The interface is built with **Jetpack Compose**, with separated labels, readable
 ## ✨ Key Features
 
 ### 🎚️ 120-Step Granular Precision
-- **Sub-step software attenuation**: Combines the native Android media-volume index with Shizuku player-level float gain to make adjustments finer than the device's exposed hardware steps. Actual behaviour depends on the player app, Android build, output route, and audio framework.
+- **Sub-step software attenuation**: Combines the native Android media-volume index with embedded ADB shell player-level float gain to make adjustments finer than the device's exposed hardware steps. Actual behaviour depends on the player app, Android build, output route, and audio framework.
 - **Perceptual interpolation**: FineVolume applies a cubic attenuation curve within each native step. This is a software gain stage, not a bit-perfect or lossless volume path.
 
 ### 🎨 Samsung One UI-Inspired Volume Panels
@@ -61,12 +61,11 @@ The interface is built with **Jetpack Compose**, with separated labels, readable
 
 ### 🎵 Per-App Volume Control
 - **Independent App Sliders**: Automatically detects running audio apps (Spotify, YouTube, Chrome, VLC, YouTube Music, Games, etc.) and provides individual volume sliders inside the expanded panel.
-- **Shizuku player attenuation**: Applies software gain to active player sessions through Android's hidden PlayerProxy interface. This requires a compatible player and working Shizuku service, and is not a guaranteed per-app volume API.
+- **Embedded ADB player attenuation**: FineVolume includes its own ADB client, pairs directly with Android Wireless Debugging, and starts a small audio helper under the Android shell UID (2000). The helper uses Android's hidden PlayerProxy interface on compatible firmware and players. This is software attenuation, not a public Android per-app volume API and not bit-perfect.
 - **Playback-session tracking**: Tracks active audio playback configurations and reapplies saved gains when Android reports session changes. Some players may recreate sessions or manage their own volume, so verify behaviour with each app.
 
 ### ⏸️ Pause Mode & Security Compatibility
 - **One-Tap Quick Pause**: Temporarily pause FineVolume with one switch in Settings whenever you need to bypass banking or security apps that block third-party accessibility services.
-- **Geto Integration**: Compatible with [GETO](https://github.com/T31n/Geto) to automate per-app accessibility toggling via Shizuku.
 
 ### ⌨️ Physical Volume Button Engine
 - **Single Press**: Steps exactly 1 FineVolume increment.
@@ -85,8 +84,8 @@ The interface is built with **Jetpack Compose**, with separated labels, readable
          ┌─────────────────┴─────────────────┐
          ▼                                   ▼
 ┌────────────────────────┐         ┌────────────────────────┐
-│ Accessibility Service  │         │   Shizuku Proxy Core   │
-│ - Hardware Key Filter  │         │ - IPlayer Binder Hook  │
+│ Accessibility Service  │         │ Embedded ADB Audio Core │
+│ - Hardware Key Filter  │         │ - ADB Shell UID Helper │
 │ - Hold-to-Repeat Loop  │         │ - Cubic Interpolation  │
 └────────────────────────┘         └────────────────────────┘
          │                                   │
@@ -102,19 +101,19 @@ The interface is built with **Jetpack Compose**, with separated labels, readable
 
 - **`AccessibilityVolumeService`**: Intercepts volume key events before the OEM SystemUI can display the stock panel.
 - **`VolumeController`**: Mutex-guarded state holder managing 120 fractional volume levels and broadcast updates.
-- **`ShizukuPlayerBackend`**: Hooks into the Android media framework via Shizuku IPC to apply granular attenuation directly to active audio sessions without requiring root.
+- **`AdbPlayerBackend`**: Uses FineVolume's own ADB-over-Wireless-Debugging connection to start and communicate with the audio helper under shell UID 2000. It does not use Shizuku or root.
 - **`VolumeOverlayController`**: Custom `ComposeView` window layout supporting fast gesture drags, touch outside dismissal, and spring animations.
 
 ---
 
 ## 🔒 Privacy & Permissions
 
-- 🛡️ **100% Offline**: FineVolume has **zero internet permissions** (`android.permission.INTERNET` is omitted from `AndroidManifest.xml`).
+- 🛡️ **Local-network only**: FineVolume uses Android network permissions to reach this device's local Wireless Debugging endpoint and discover its TLS connection port. It does not upload audio, app usage, or pairing keys to a cloud service.
 - 🔋 **Battery Efficient**: Runs as a passive Accessibility Service that only activates when volume keys are pressed or the panel is drawn.
 
 ### Required Permissions
 1. **Accessibility Service**: Intercepts physical volume button presses.
-2. **Shizuku (Optional)**: Enables a hidden player-level software attenuation path on compatible devices and players. This is not a public Android API and is not bit-perfect. Without Shizuku or root, FineVolume uses the public AudioManager API and is limited to the device's native shared media-volume steps.
+2. **Wireless Debugging (for fine-grained player attenuation)**: FineVolume pairs directly with the phone using Android's six-digit pairing code. It saves its own ADB identity encrypted with Android Keystore and reconnects using the separate ADB TLS connection port. Shizuku is not used or required.
 3. **Do Not Disturb (Notification Policy)**: Allows toggling between Ring, Vibrate, and Silent modes directly from the overlay.
 
 ---
@@ -127,8 +126,8 @@ The interface is built with **Jetpack Compose**, with separated labels, readable
    - Open **Settings** → **Accessibility** → **FineVolume** → Turn on.
 3. **Grant DND Access**:
    - Tap the Ringer button on the overlay or follow the in-app prompt to allow Do Not Disturb access.
-4. **Start Shizuku** *(for 120-step audio proxy)*:
-   - Ensure [Shizuku](https://shizuku.rikka.app/) is running via Wireless Debugging or ADB, then open FineVolume and grant permission.
+4. **Pair FineVolume** *(once)*:
+   - Enable Developer Options → Wireless Debugging. Choose **Pair device with pairing code**, enter the pairing port and six-digit code in FineVolume, and tap **Pair FineVolume**. Keep Wireless Debugging enabled while using the embedded ADB audio helper. FineVolume never toggles Wireless Debugging off/on.
 
 ---
 
