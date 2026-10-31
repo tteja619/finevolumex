@@ -6,6 +6,7 @@ import android.media.AudioPlaybackConfiguration
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
+import android.provider.Settings
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -74,6 +75,7 @@ object FineVolumeShellServer {
         private val appGains = ConcurrentHashMap<String, Float>()
         @Volatile private var mediaGain = 1.0f
         private lateinit var audioManager: AudioManager
+        private lateinit var systemContext: Context
         private lateinit var packageManager: android.content.pm.PackageManager
         private lateinit var getPlayerProxyMethod: Method
         private var getClientUidMethod: Method? = null
@@ -97,7 +99,7 @@ object FineVolumeShellServer {
             val systemMain = activityThreadClass.getDeclaredMethod("systemMain").apply { isAccessible = true }
             val activityThread = systemMain.invoke(null)
             val getSystemContext = activityThreadClass.getDeclaredMethod("getSystemContext").apply { isAccessible = true }
-            val systemContext = getSystemContext.invoke(activityThread) as Context
+            systemContext = getSystemContext.invoke(activityThread) as Context
 
             audioManager = systemContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             packageManager = systemContext.packageManager
@@ -147,6 +149,14 @@ object FineVolumeShellServer {
                     JSONObject().put("ok", true).put("gain", appGains[packageName] ?: 1.0f)
                 }
                 "get_active_apps" -> JSONObject().put("ok", true).put("activeApps", JSONArray(activePackages()))
+                "set_live_caption" -> {
+                    val enabled = command.optBoolean("enabled", false)
+                    val value = if (enabled) 1 else 0
+                    val first = Settings.Secure.putInt(systemContext.contentResolver, "odi_captions_enabled", value)
+                    val second = Settings.Secure.putInt(systemContext.contentResolver, "accessibility_captioning_enabled", value)
+                    check(first || second) { "Android denied permission to change Live Caption settings." }
+                    JSONObject().put("ok", true).put("enabled", enabled)
+                }
                 "shutdown" -> JSONObject().put("ok", true).put("shutdown", true)
                 else -> JSONObject().put("ok", false).put("error", "Unknown command.")
             }
