@@ -10,7 +10,7 @@ import dev.finevolume.app.domain.model.VolumeState
  *
  * Implementations:
  * - [NativeVolumeBackend]: AudioManager.setStreamVolume() — always available
- * - [ShizukuPlayerBackend]: IPlayer.setVolume() via Shizuku — optional, higher precision
+ * - [AdbPlayerBackend]: IPlayer.setVolume() via FineVolume's embedded ADB shell helper
  * - [FallbackBackend]: read-only, used when all write-capable backends fail
  */
 interface VolumeBackend {
