@@ -14,4 +14,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "FineVolume"
-include(":app")
+include(":app", ":libadb")
