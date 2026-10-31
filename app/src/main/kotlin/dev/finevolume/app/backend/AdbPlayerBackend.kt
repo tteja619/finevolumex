@@ -22,7 +22,7 @@ class AdbPlayerBackend @Inject constructor(
     private val adbManager: EmbeddedAdbManager
 ) : VolumeBackend {
 
-    override val type = BackendType.SHIZUKU_PLAYER
+    override val type = BackendType.ADB_PLAYER
 
     @Volatile private var currentSessionGain = 1f
     @Volatile private var cachedMaxVolume = -1
