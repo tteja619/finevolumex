@@ -32,7 +32,7 @@ class SettingsRepository @Inject constructor(
             mediaResolution = prefs[MEDIA_RES] ?: 120,
             mediaIncrement = prefs[MEDIA_INC] ?: 1,
             longPressRepeatIntervalMs = prefs[LONG_PRESS_INTERVAL] ?: 60,
-            hapticLevel = prefs[HAPTIC_LVL] ?: 1,
+            hapticLevel = prefs[HAPTIC_LVL] ?: 0,
             accelerationMode = try {
                 AccelerationMode.valueOf(prefs[ACCEL_MODE] ?: "EXPONENTIAL")
             } catch (_: Exception) {

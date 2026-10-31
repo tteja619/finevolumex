@@ -4,17 +4,16 @@ import dev.finevolume.app.backend.BackendSelector
 import dev.finevolume.app.data.SettingsRepository
 import dev.finevolume.app.domain.model.AudioStream
 import dev.finevolume.app.domain.model.VolumeState
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
-
 import dev.finevolume.app.ui.overlay.VolumeOverlayController
 
 /**
  * High-level API for mutating volume state.
- * Translates intent ("step up") into concrete position changes on the active backend.
+ * Fine positions are cached only while the underlying Android stream index is
+ * unchanged. External system volume changes therefore invalidate stale steps.
  */
 @Singleton
 class VolumeController @Inject constructor(
@@ -25,83 +24,82 @@ class VolumeController @Inject constructor(
 ) {
     private val backend get() = backendSelector.activeBackend.value
 
-    /**
-     * Returns the true effective resolution — never more than the backend can provide.
-     * This is what the UI should display as the actual capability.
-     */
-    fun effectiveResolution(@Suppress("UNUSED_PARAMETER") stream: AudioStream): Int {
-        return backend.capabilities().effectiveResolution
-    }
+    fun effectiveResolution(@Suppress("UNUSED_PARAMETER") stream: AudioStream): Int =
+        backend.capabilities().effectiveResolution
 
-    /**
-     * Effective resolution given a requested resolution.
-     * Returns min(requested, backend capability).
-     */
     fun effectiveResolution(@Suppress("UNUSED_PARAMETER") stream: AudioStream, requested: Int): Int =
         min(requested, backend.capabilities().effectiveResolution)
 
-    suspend fun getState(stream: AudioStream): VolumeState =
-        backend.getState(stream)
+    suspend fun getState(stream: AudioStream): VolumeState = backend.getState(stream)
 
     private val mutex = kotlinx.coroutines.sync.Mutex()
-    
-    // Maintain internal precise position to prevent rounding loss on small increments
     private val precisePositions = mutableMapOf<AudioStream, Float>()
+    private val preciseNativeIndices = mutableMapOf<AudioStream, Int>()
     private val lastUpdateTime = mutableMapOf<AudioStream, Long>()
 
-    suspend fun stepUp(stream: AudioStream, steps: Int) {
-        val requested = settingsRepository.cachedSettings.mediaResolution.coerceAtLeast(1)
-        val delta = steps.toFloat() / requested
+    private suspend fun adjust(stream: AudioStream, steps: Int) {
+        val resolution = settingsRepository.cachedSettings.mediaResolution.coerceAtLeast(1)
+        val delta = steps.toFloat() / resolution
         val now = android.os.SystemClock.uptimeMillis()
 
         val newPosition = mutex.withLock {
-            val lastTime = lastUpdateTime[stream] ?: 0L
-            val currentPos = if (now - lastTime < 1500L && precisePositions.containsKey(stream)) {
-                precisePositions[stream]!!
+            val currentState = backend.getState(stream)
+            val cachedPosition = precisePositions[stream]
+            val cacheIsCurrent =
+                now - (lastUpdateTime[stream] ?: 0L) < CACHE_WINDOW_MS &&
+                cachedPosition != null &&
+                preciseNativeIndices[stream] == currentState.nativeIndex
+
+            val currentPosition = if (cacheIsCurrent) {
+                cachedPosition!!
             } else {
-                val state = backend.getState(stream)
-                state.position
+                currentState.position
             }
-            val pos = (currentPos + delta).coerceIn(0f, 1f)
-            precisePositions[stream] = pos
+
+            val nextPosition = (currentPosition + delta).coerceIn(0f, 1f)
+            backend.setPosition(stream, nextPosition)
+
+            // Record the native index after applying the change. If Samsung
+            // SystemUI, an accessory, or another controller changes it later,
+            // the next step reads the fresh system position instead of stale cache.
+            val appliedState = backend.getState(stream)
+            precisePositions[stream] = nextPosition
+            preciseNativeIndices[stream] = appliedState.nativeIndex
             lastUpdateTime[stream] = now
-            pos
+            nextPosition
         }
-        
-        backend.setPosition(stream, newPosition)
-        volumeOverlayController.show(newPosition)
+
+        if (stream == AudioStream.MUSIC) volumeOverlayController.show(newPosition)
+    }
+
+    suspend fun stepUp(stream: AudioStream, steps: Int) {
+        adjust(stream, steps.coerceAtLeast(1))
     }
 
     suspend fun stepDown(stream: AudioStream, steps: Int) {
-        val requested = settingsRepository.cachedSettings.mediaResolution.coerceAtLeast(1)
-        val delta = steps.toFloat() / requested
-        val now = android.os.SystemClock.uptimeMillis()
-
-        val newPosition = mutex.withLock {
-            val lastTime = lastUpdateTime[stream] ?: 0L
-            val currentPos = if (now - lastTime < 1500L && precisePositions.containsKey(stream)) {
-                precisePositions[stream]!!
-            } else {
-                val state = backend.getState(stream)
-                state.position
-            }
-            val pos = (currentPos - delta).coerceIn(0f, 1f)
-            precisePositions[stream] = pos
-            lastUpdateTime[stream] = now
-            pos
-        }
-        
-        backend.setPosition(stream, newPosition)
-        volumeOverlayController.show(newPosition)
+        adjust(stream, -steps.coerceAtLeast(1))
     }
 
     suspend fun setAbsolute(stream: AudioStream, position: Float) {
-        val pos = position.coerceIn(0f, 1f)
-        val now = android.os.SystemClock.uptimeMillis()
+        val nextPosition = position.coerceIn(0f, 1f)
         mutex.withLock {
-            precisePositions[stream] = pos
-            lastUpdateTime[stream] = now
+            backend.setPosition(stream, nextPosition)
+            val appliedState = backend.getState(stream)
+            precisePositions[stream] = nextPosition
+            preciseNativeIndices[stream] = appliedState.nativeIndex
+            lastUpdateTime[stream] = android.os.SystemClock.uptimeMillis()
         }
-        backend.setPosition(stream, pos)
+    }
+
+    suspend fun invalidatePrecisePosition(stream: AudioStream) {
+        mutex.withLock {
+            precisePositions.remove(stream)
+            preciseNativeIndices.remove(stream)
+            lastUpdateTime.remove(stream)
+        }
+    }
+
+    companion object {
+        private const val CACHE_WINDOW_MS = 1500L
     }
 }

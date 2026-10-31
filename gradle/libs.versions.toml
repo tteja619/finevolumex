@@ -4,7 +4,6 @@ agp = "8.1.4"
 compose-bom = "2024.02.01"
 hilt = "2.51.1"
 datastore = "1.1.1"
-shizuku = "13.1.5"
 coroutines = "1.8.1"
 mockk = "1.13.12"
 robolectric = "4.13"
@@ -28,8 +27,6 @@ hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", v
 hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "hilt-navigation" }
 datastore = { group = "androidx.datastore", name = "datastore", version.ref = "datastore" }
 
-shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
-shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 hidden-api-bypass = { group = "org.lsposed.hiddenapibypass", name = "hiddenapibypass", version.ref = "hidden-api-bypass" }
 coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }

@@ -4,11 +4,28 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -33,6 +50,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dagger.hilt.android.AndroidEntryPoint
+import dev.finevolume.app.adb.WirelessAdbStage
+import dev.finevolume.app.adb.WirelessAdbStatus
 import dev.finevolume.app.domain.model.BackendType
 import dev.finevolume.app.domain.model.VolumeCapabilities
 import dev.finevolume.app.ui.theme.FineVolumeTheme
@@ -45,6 +64,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewModel.startWirelessAdbWatchdog()
+        ContextCompat.startForegroundService(this, Intent(this, dev.finevolume.app.service.VolumeControlForegroundService::class.java))
         setContent {
             FineVolumeTheme {
                 Surface(
@@ -53,19 +74,22 @@ class MainActivity : ComponentActivity() {
                 ) {
                     val settings by viewModel.settings.collectAsState()
                     val capabilities by viewModel.activeBackendCapabilities.collectAsState()
-                    val shizukuConnected by viewModel.isShizukuConnected.collectAsState()
-                    val shizukuPermission by viewModel.hasShizukuPermission.collectAsState()
+                    val wirelessAdbStatus by viewModel.wirelessAdbStatus.collectAsState()
 
                     MainScreen(
                         settings = settings,
                         capabilities = capabilities,
-                        shizukuConnected = shizukuConnected,
-                        shizukuPermission = shizukuPermission,
+                        wirelessAdbStatus = wirelessAdbStatus,
                         onToggleEnabled = viewModel::updateIsEnabled,
                         onOpenAccessibilitySettings = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         },
-                        onRequestShizuku = { viewModel.requestShizukuPermission() },
+                        onOpenDeveloperOptions = {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                        },
+                        onPairWirelessAdb = viewModel::pairWirelessAdb,
+                        onReconnectWirelessAdb = viewModel::reconnectWirelessAdb,
+                        onForgetWirelessAdb = viewModel::forgetWirelessAdbPairing,
                         onResolutionChange = viewModel::updateMediaResolution,
                         onIncrementChange = viewModel::updateMediaIncrement,
                         onLongPressIntervalChange = viewModel::updateLongPressRepeatInterval,
@@ -82,11 +106,13 @@ class MainActivity : ComponentActivity() {
 fun MainScreen(
     settings: dev.finevolume.app.data.AppSettings,
     capabilities: VolumeCapabilities,
-    shizukuConnected: Boolean,
-    shizukuPermission: Boolean,
+    wirelessAdbStatus: WirelessAdbStatus,
     onToggleEnabled: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onRequestShizuku: () -> Unit,
+    onOpenDeveloperOptions: () -> Unit,
+    onPairWirelessAdb: (String, String) -> Unit,
+    onReconnectWirelessAdb: () -> Unit,
+    onForgetWirelessAdb: () -> Unit,
     onResolutionChange: (Float) -> Unit,
     onIncrementChange: (Float) -> Unit,
     onLongPressIntervalChange: (Float) -> Unit,
@@ -110,19 +136,17 @@ fun MainScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            AppToggleCard(
-                isEnabled = settings.isEnabled,
-                onToggle = onToggleEnabled
-            )
-
+            AppToggleCard(isEnabled = settings.isEnabled, onToggle = onToggleEnabled)
             BankingCompatibilityCard()
 
-            StatusCard(
-                shizukuConnected = shizukuConnected,
-                shizukuPermission = shizukuPermission,
+            WirelessAdbStatusCard(
+                status = wirelessAdbStatus,
                 capabilities = capabilities,
+                onOpenDeveloperOptions = onOpenDeveloperOptions,
                 onOpenAccessibilitySettings = onOpenAccessibilitySettings,
-                onRequestShizuku = onRequestShizuku
+                onPair = onPairWirelessAdb,
+                onReconnect = onReconnectWirelessAdb,
+                onForget = onForgetWirelessAdb
             )
 
             ConfigurationCard(
@@ -150,7 +174,6 @@ fun MainScreen(
                 effectiveValue = null,
                 description = "Interval between volume steps while holding a button (ms). Lower = faster.",
                 onValueChange = onLongPressIntervalChange,
-                // Invert display: show it as "speed" — lower ms = faster, higher ms = slower
                 displayTransform = { ms -> ms.toInt().toString() + " ms" }
             )
 
@@ -163,74 +186,116 @@ fun MainScreen(
 }
 
 @Composable
-fun StatusCard(
-    shizukuConnected: Boolean,
-    shizukuPermission: Boolean,
+fun WirelessAdbStatusCard(
+    status: WirelessAdbStatus,
     capabilities: VolumeCapabilities,
+    onOpenDeveloperOptions: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
-    onRequestShizuku: () -> Unit
+    onPair: (String, String) -> Unit,
+    onReconnect: () -> Unit,
+    onForget: () -> Unit
 ) {
+    var pairingPort by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    var pairingCode by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    val ready = status.isReady
+    val statusColor = when (status.stage) {
+        WirelessAdbStage.READY -> Color(0xFF2E7D32)
+        WirelessAdbStage.PAIRING, WirelessAdbStage.CONNECTING, WirelessAdbStage.STARTING_HELPER -> MaterialTheme.colorScheme.primary
+        WirelessAdbStage.ERROR -> MaterialTheme.colorScheme.error
+        else -> Color(0xFFB26A00)
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         shape = RoundedCornerShape(24.dp)
     ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text(
-                "System Status",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Backend Status
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = if (capabilities.backendType == BackendType.SHIZUKU_PLAYER) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    imageVector = if (ready) Icons.Default.CheckCircle else Icons.Default.Warning,
                     contentDescription = null,
-                    tint = if (capabilities.backendType == BackendType.SHIZUKU_PLAYER) Color(0xFF4CAF50) else Color(0xFFFF9800),
+                    tint = statusColor,
                     modifier = Modifier.size(24.dp)
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text("Active Backend", fontWeight = FontWeight.Medium)
-                    Text(
-                        text = capabilities.backendType.name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Shizuku
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Shizuku Permission", fontWeight = FontWeight.Medium)
+                    Text("FineVolume Wireless Debugging", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(
-                        if (shizukuPermission) "Granted" else if (shizukuConnected) "Action Required" else "Not Connected",
+                        text = if (ready) "Self-hosted shell engine connected" else "Independent ADB engine",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (!shizukuPermission && shizukuConnected) {
-                    Button(onClick = onRequestShizuku, shape = RoundedCornerShape(12.dp)) {
-                        Text("Grant")
-                    }
+            }
+
+            Text(status.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                text = "Active backend: " + capabilities.backendType.name +
+                    if (ready) "  •  Shell UID " + status.helperUid + "  •  " + status.activeMediaSessions + " media sessions"
+                    else "  •  Native Android controls active",
+                style = MaterialTheme.typography.labelMedium,
+                color = statusColor
+            )
+            status.lastError?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+
+            Text(
+                "First-time setup: open Developer Options, enable Wireless Debugging, then choose Pair device with pairing code. Keep the pairing dialog visible and enter its pairing port and six-digit code below. FineVolume stores its own ADB key privately.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedTextField(
+                value = pairingPort,
+                onValueChange = { pairingPort = it.filter(Char::isDigit).take(5) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Wireless Debugging pairing port") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            OutlinedTextField(
+                value = pairingCode,
+                onValueChange = { pairingCode = it.filter(Char::isDigit).take(6) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Six-digit pairing code") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+
+            Button(
+                onClick = { onPair(pairingPort, pairingCode) },
+                enabled = !ready && (pairingPort.toIntOrNull()?.let { it in 1..65535 } == true) && pairingCode.length == 6 &&
+                    status.stage != WirelessAdbStage.PAIRING,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(if (status.stage == WirelessAdbStage.PAIRING) "Pairing…" else "Pair FineVolume")
+            }
+
+            OutlinedButton(
+                onClick = onOpenDeveloperOptions,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Open Developer Options")
+            }
+
+            if (status.stage != WirelessAdbStage.NOT_PAIRED) {
+                OutlinedButton(
+                    onClick = onReconnect,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Reconnect / Restart Audio Helper")
+                }
+                TextButton(onClick = onForget, modifier = Modifier.align(Alignment.End)) {
+                    Text("Forget FineVolume pairing")
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
 
             Button(
                 onClick = onOpenAccessibilitySettings,
@@ -254,14 +319,31 @@ fun ConfigurationCard(
     displayTransform: ((Float) -> String)? = null
 ) {
     var sliderValue by androidx.compose.runtime.remember(value) {
-        androidx.compose.runtime.mutableFloatStateOf(value)
+        androidx.compose.runtime.mutableFloatStateOf(
+            value.coerceIn(range.start, range.endInclusive).roundToInt().toFloat()
+        )
+    }
+    var showEditor by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var editText by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+
+    val updateStep: (Int) -> Unit = { delta ->
+        val next = (sliderValue.toInt() + delta)
+            .coerceIn(range.start.toInt(), range.endInclusive.toInt())
+            .toFloat()
+        if (next != sliderValue) {
+            sliderValue = next
+            onValueChange(next)
+        }
+    }
+    val latestUpdateStep by rememberUpdatedState(updateStep)
+    val parsedEditValue = editText.toIntOrNull()
+    val validEditValue = parsedEditValue?.takeIf {
+        it >= range.start.toInt() && it <= range.endInclusive.toInt()
     }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         shape = RoundedCornerShape(24.dp)
     ) {
@@ -276,21 +358,47 @@ fun ConfigurationCard(
                     text = displayTransform?.invoke(sliderValue) ?: sliderValue.toInt().toString(),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable {
+                            editText = sliderValue.toInt().toString()
+                            showEditor = true
+                        }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
 
             Spacer(modifier = Modifier.height(4.dp))
             Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(12.dp))
 
-            Spacer(modifier = Modifier.height(16.dp))
-            Slider(
-                value = sliderValue,
-                onValueChange = { sliderValue = it },
-                onValueChangeFinished = { onValueChange(sliderValue) },
-                valueRange = range,
-                steps = 0
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                RepeatableStepButton(
+                    icon = { Icon(Icons.Rounded.Remove, contentDescription = null) },
+                    description = "Decrease $title",
+                    onStep = { latestUpdateStep(-1) }
+                )
+                Slider(
+                    modifier = Modifier.weight(1f),
+                    value = sliderValue,
+                    onValueChange = {
+                        sliderValue = it.roundToInt().toFloat().coerceIn(range.start, range.endInclusive)
+                    },
+                    onValueChangeFinished = { onValueChange(sliderValue) },
+                    valueRange = range,
+                    steps = 0
+                )
+                RepeatableStepButton(
+                    icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
+                    description = "Increase $title",
+                    onStep = { latestUpdateStep(1) }
+                )
+            }
 
             AnimatedVisibility(visible = effectiveValue != null && effectiveValue < sliderValue.toInt()) {
                 Box(
@@ -301,13 +409,91 @@ fun ConfigurationCard(
                         .padding(12.dp)
                 ) {
                     Text(
-                        "Hardware limited to $effectiveValue. Enable Shizuku for full resolution.",
+                        "Native Android volume provides $effectiveValue hardware steps. Basic mode works without Wireless Debugging; public Android APIs do not expose per-app sub-step gain.",
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
         }
+    }
+
+    if (showEditor) {
+        AlertDialog(
+            onDismissRequest = { showEditor = false },
+            title = { Text("Set $title") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editText,
+                        onValueChange = { editText = it.filter(Char::isDigit).take(4) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        label = { Text("Value") },
+                        supportingText = { Text("Allowed range: ${range.start.toInt()} to ${range.endInclusive.toInt()}") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = validEditValue != null,
+                    onClick = {
+                        val next = validEditValue!!.toFloat()
+                        sliderValue = next
+                        onValueChange(next)
+                        showEditor = false
+                    }
+                ) { Text("Apply") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditor = false }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun RepeatableStepButton(
+    icon: @Composable () -> Unit,
+    description: String,
+    onStep: () -> Unit
+) {
+    val latestOnStep by rememberUpdatedState(onStep)
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .pointerInput(Unit) {
+                kotlinx.coroutines.coroutineScope {
+                    val repeatScope = this
+                    detectTapGestures(
+                        onPress = {
+                            latestOnStep()
+                            val repeatJob = repeatScope.launch {
+                                delay(350L)
+                                while (isActive) {
+                                    latestOnStep()
+                                    delay(55L)
+                                }
+                            }
+                            tryAwaitRelease()
+                            repeatJob.cancel()
+                        }
+                    )
+                }
+            }
+            .semantics {
+                contentDescription = description
+                role = Role.Button
+                onClick(label = description) {
+                    latestOnStep()
+                    true
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        icon()
     }
 }
 

@@ -6,8 +6,8 @@ package dev.finevolume.app.domain.model
 enum class BackendType {
     /** Standard AudioManager.setStreamVolume() — always available */
     NATIVE,
-    /** Shizuku-based IPlayer session gain + NativeVolumeBackend — Shizuku required */
-    SHIZUKU_PLAYER,
+    /** FineVolume's own ADB Wireless Debugging shell helper + native AudioManager */
+    WIRELESS_ADB_PLAYER,
     /** Read-only fallback — used when all write-capable backends fail */
     FALLBACK,
 }
@@ -23,7 +23,7 @@ data class VolumeCapabilities(
     /**
      * The true number of distinguishable volume levels this backend provides.
      * = getStreamMaxVolume() for NativeVolumeBackend
-     * = up to 1000 for ShizukuPlayerBackend (float gain precision)
+     * = up to 1000 for WirelessAdbPlayerBackend (float gain precision)
      */
     val effectiveResolution: Int,
     /** Whether this backend applies per-session floating-point gain (sub-step precision) */
