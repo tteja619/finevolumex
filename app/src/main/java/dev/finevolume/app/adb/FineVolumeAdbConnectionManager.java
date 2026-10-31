@@ -2,6 +2,8 @@ package dev.finevolume.app.adb;
 
 import android.content.Context;
 import android.os.Build;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import android.sun.security.x509.AlgorithmId;
 import android.sun.security.x509.CertificateAlgorithmId;
 import android.sun.security.x509.CertificateExtensions;
@@ -18,6 +20,7 @@ import android.sun.security.x509.X500Name;
 import android.sun.security.x509.X509CertImpl;
 import android.sun.security.x509.X509CertInfo;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -25,6 +28,7 @@ import java.io.IOException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
@@ -33,15 +37,29 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Date;
 import java.util.concurrent.TimeUnit;
 
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+
 import io.github.muntashirakon.adb.AbsAdbConnectionManager;
 
 /**
  * FineVolume's own ADB identity and connection manager.
  *
- * The RSA identity is stored only in this app's no-backup private directory.
- * It is never shared with Shizuku or another ADB client.
+ * The RSA host key is encrypted with an AES-GCM key stored in Android Keystore.
+ * Only the public X.509 certificate is stored unencrypted. This identity is
+ * unique to FineVolume and is not shared with Shizuku or another ADB client.
  */
 public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManager {
+
+    private static final String ANDROID_KEYSTORE = "AndroidKeyStore";
+    private static final String ENCRYPTION_KEY_ALIAS = "dev.finevolume.app.wirelessadb.hostkey";
+    private static final String ENCRYPTION_TRANSFORMATION = "AES/GCM/NoPadding";
+    private static final byte KEY_FORMAT_VERSION = 1;
+    private static final int GCM_IV_BYTES = 12;
+    private static final int GCM_TAG_BITS = 128;
+    private static final int ENCRYPTED_HEADER_BYTES = 2;
 
     private final File keyFile;
     private final File certificateFile;
@@ -54,7 +72,7 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
         if (!identityDir.exists() && !identityDir.mkdirs()) {
             throw new IOException("Could not create the private ADB identity directory.");
         }
-        keyFile = new File(identityDir, "host-private.pk8");
+        keyFile = new File(identityDir, "host-private.pk8.enc");
         certificateFile = new File(identityDir, "host-certificate.der");
         setApi(Build.VERSION.SDK_INT);
         setTimeout(12, TimeUnit.SECONDS);
@@ -63,20 +81,97 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
 
     private void loadOrCreateIdentity() throws Exception {
         if (keyFile.isFile() && certificateFile.isFile()) {
-            try {
-                byte[] encodedKey = readAll(keyFile);
-                byte[] encodedCertificate = readAll(certificateFile);
-                privateKey = KeyFactory.getInstance("RSA")
-                        .generatePrivate(new PKCS8EncodedKeySpec(encodedKey));
-                certificate = CertificateFactory.getInstance("X.509")
-                        .generateCertificate(new java.io.ByteArrayInputStream(encodedCertificate));
-                return;
-            } catch (Exception invalidIdentity) {
-                keyFile.delete();
-                certificateFile.delete();
-            }
+            byte[] encodedKey = readPrivateKey();
+            privateKey = KeyFactory.getInstance("RSA")
+                    .generatePrivate(new PKCS8EncodedKeySpec(encodedKey));
+            certificate = CertificateFactory.getInstance("X.509")
+                    .generateCertificate(new ByteArrayInputStream(readAll(certificateFile)));
+            return;
         }
+
+        // Migrate the old plaintext identity in-place before generating a new one.
+        File legacyKey = new File(keyFile.getParentFile(), "host-private.pk8");
+        File legacyCertificate = new File(keyFile.getParentFile(), "host-certificate.der");
+        if (legacyKey.isFile() && legacyCertificate.isFile()) {
+            byte[] legacyPrivateKey = readAll(legacyKey);
+            privateKey = KeyFactory.getInstance("RSA")
+                    .generatePrivate(new PKCS8EncodedKeySpec(legacyPrivateKey));
+            certificate = CertificateFactory.getInstance("X.509")
+                    .generateCertificate(new ByteArrayInputStream(readAll(legacyCertificate)));
+            writeEncryptedPrivateKey(legacyPrivateKey);
+            legacyKey.delete();
+            return;
+        }
+
         createIdentity();
+    }
+
+    /**
+     * Reads the encrypted identity. A legacy plaintext key found at the old
+     * location is migrated by loadOrCreateIdentity() without changing the ADB
+     * public key, so existing Android pairing authorization is retained.
+     */
+    private byte[] readPrivateKey() throws Exception {
+        byte[] payload = readAll(keyFile);
+        if (payload.length < ENCRYPTED_HEADER_BYTES + GCM_IV_BYTES + 16
+                || payload[0] != KEY_FORMAT_VERSION) {
+            throw new IOException("Saved ADB private-key file has an unknown or truncated format.");
+        }
+
+        int ivLength = payload[1] & 0xff;
+        if (ivLength != GCM_IV_BYTES || payload.length <= ENCRYPTED_HEADER_BYTES + ivLength + 16) {
+            throw new IOException("Saved ADB private-key encryption header is invalid.");
+        }
+
+        byte[] iv = new byte[ivLength];
+        System.arraycopy(payload, ENCRYPTED_HEADER_BYTES, iv, 0, ivLength);
+        byte[] ciphertext = new byte[payload.length - ENCRYPTED_HEADER_BYTES - ivLength];
+        System.arraycopy(payload, ENCRYPTED_HEADER_BYTES + ivLength,
+                ciphertext, 0, ciphertext.length);
+
+        Cipher cipher = Cipher.getInstance(ENCRYPTION_TRANSFORMATION);
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateEncryptionKey(),
+                new GCMParameterSpec(GCM_TAG_BITS, iv));
+        return cipher.doFinal(ciphertext);
+    }
+
+    private void writeEncryptedPrivateKey(byte[] encodedKey) throws Exception {
+        Cipher cipher = Cipher.getInstance(ENCRYPTION_TRANSFORMATION);
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateEncryptionKey());
+        byte[] iv = cipher.getIV();
+        if (iv == null || iv.length != GCM_IV_BYTES) {
+            throw new IOException("Android Keystore returned an invalid AES-GCM IV.");
+        }
+
+        byte[] ciphertext = cipher.doFinal(encodedKey);
+        byte[] payload = new byte[ENCRYPTED_HEADER_BYTES + iv.length + ciphertext.length];
+        payload[0] = KEY_FORMAT_VERSION;
+        payload[1] = (byte) iv.length;
+        System.arraycopy(iv, 0, payload, ENCRYPTED_HEADER_BYTES, iv.length);
+        System.arraycopy(ciphertext, 0, payload, ENCRYPTED_HEADER_BYTES + iv.length, ciphertext.length);
+        writeAtomically(keyFile, payload);
+    }
+
+    private SecretKey getOrCreateEncryptionKey() throws Exception {
+        KeyStore keyStore = KeyStore.getInstance(ANDROID_KEYSTORE);
+        keyStore.load(null);
+        java.security.Key existing = keyStore.getKey(ENCRYPTION_KEY_ALIAS, null);
+        if (existing instanceof SecretKey) {
+            return (SecretKey) existing;
+        }
+
+        KeyGenerator generator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE);
+        generator.init(new KeyGenParameterSpec.Builder(
+                ENCRYPTION_KEY_ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .setRandomizedEncryptionRequired(true)
+                .setUserAuthenticationRequired(false)
+                .build());
+        return generator.generateKey();
     }
 
     private void createIdentity() throws Exception {
@@ -96,8 +191,7 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
 
         X509CertInfo info = new X509CertInfo();
         info.set("version", new CertificateVersion(2));
-        info.set("serialNumber",
-                new CertificateSerialNumber(nextSerialNumber()));
+        info.set("serialNumber", new CertificateSerialNumber(nextSerialNumber()));
         info.set("algorithmID", new CertificateAlgorithmId(AlgorithmId.get(algorithm)));
         info.set("subject", new CertificateSubjectName(name));
         info.set("key", new CertificateX509Key(pair.getPublic()));
@@ -109,7 +203,7 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
         generated.sign(privateKey, algorithm);
         certificate = generated;
 
-        writeAtomically(keyFile, privateKey.getEncoded());
+        writeEncryptedPrivateKey(privateKey.getEncoded());
         writeAtomically(certificateFile, certificate.getEncoded());
     }
 
@@ -123,7 +217,11 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
 
     private static byte[] readAll(File file) throws IOException {
         try (FileInputStream input = new FileInputStream(file)) {
-            byte[] bytes = new byte[(int) file.length()];
+            long length = file.length();
+            if (length <= 0 || length > 1024 * 1024) {
+                throw new IOException("ADB identity file has an invalid size.");
+            }
+            byte[] bytes = new byte[(int) length];
             int offset = 0;
             while (offset < bytes.length) {
                 int read = input.read(bytes, offset, bytes.length - offset);
@@ -143,6 +241,24 @@ public final class FineVolumeAdbConnectionManager extends AbsAdbConnectionManage
         if (!temporary.renameTo(target)) {
             temporary.delete();
             throw new IOException("Could not save the ADB identity file.");
+        }
+    }
+
+    public void clearIdentity() throws Exception {
+        if (keyFile.exists() && !keyFile.delete()) {
+            throw new IOException("Could not delete the saved ADB private-key file.");
+        }
+        if (certificateFile.exists() && !certificateFile.delete()) {
+            throw new IOException("Could not delete the saved ADB certificate file.");
+        }
+        KeyStore keyStore = KeyStore.getInstance(ANDROID_KEYSTORE);
+        keyStore.load(null);
+        if (keyStore.containsAlias(ENCRYPTION_KEY_ALIAS)) {
+            keyStore.deleteEntry(ENCRYPTION_KEY_ALIAS);
+        }
+        File legacyKey = new File(keyFile.getParentFile(), "host-private.pk8");
+        if (legacyKey.exists() && !legacyKey.delete()) {
+            throw new IOException("Could not delete the legacy ADB private-key file.");
         }
     }
 
