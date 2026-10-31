@@ -71,11 +71,16 @@ class MainActivity : ComponentActivity() {
                     val settings by viewModel.settings.collectAsState()
                     val capabilities by viewModel.activeBackendCapabilities.collectAsState()
                     val adbStatus by viewModel.embeddedAdbStatus.collectAsState()
+                    val diagnosticReport by viewModel.diagnosticReport.collectAsState()
+                    val diagnosticsRunning by viewModel.diagnosticsRunning.collectAsState()
 
                     MainScreen(
                         settings = settings,
                         capabilities = capabilities,
                         adbStatus = adbStatus,
+                        diagnosticReport = diagnosticReport,
+                        diagnosticsRunning = diagnosticsRunning,
+                        onRunDiagnostics = viewModel::runDiagnostics,
                         onToggleEnabled = viewModel::updateIsEnabled,
                         onOpenAccessibilitySettings = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -106,6 +111,9 @@ fun MainScreen(
     settings: dev.finevolume.app.data.AppSettings,
     capabilities: VolumeCapabilities,
     adbStatus: EmbeddedAdbStatus,
+    diagnosticReport: String,
+    diagnosticsRunning: Boolean,
+    onRunDiagnostics: () -> Unit,
     onToggleEnabled: (Boolean) -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onPairEmbeddedAdb: (Int, String) -> Unit,
@@ -145,6 +153,9 @@ fun MainScreen(
             WirelessDebuggingCard(
                 status = adbStatus,
                 capabilities = capabilities,
+                diagnosticReport = diagnosticReport,
+                diagnosticsRunning = diagnosticsRunning,
+                onRunDiagnostics = onRunDiagnostics,
                 onPair = onPairEmbeddedAdb,
                 onReconnect = onReconnectEmbeddedAdb,
                 onDisconnect = onDisconnectEmbeddedAdb,
@@ -193,6 +204,9 @@ fun MainScreen(
 fun WirelessDebuggingCard(
     status: EmbeddedAdbStatus,
     capabilities: VolumeCapabilities,
+    diagnosticReport: String,
+    diagnosticsRunning: Boolean,
+    onRunDiagnostics: () -> Unit,
     onPair: (Int, String) -> Unit,
     onReconnect: (Int?) -> Unit,
     onDisconnect: () -> Unit,
@@ -349,6 +363,29 @@ fun WirelessDebuggingCard(
             if (status.pairedKeyStored) {
                 TextButton(onClick = onForgetPairing, modifier = Modifier.fillMaxWidth()) {
                     Text("Forget saved pairing")
+                }
+            }
+
+            OutlinedButton(
+                onClick = onRunDiagnostics,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !diagnosticsRunning
+            ) {
+                Text(if (diagnosticsRunning) "Running diagnostics…" else "Run ADB Diagnostics")
+            }
+
+            if (diagnosticReport.isNotBlank()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        diagnosticReport,
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
             }
 
