@@ -473,8 +473,10 @@ class WirelessAdbController @Inject constructor(
         preferences.edit().putBoolean(KEY_PAIRED, false).apply()
         scope.launch {
             disconnectTransport()
-            runCatching { manager().clearIdentity() }
-                .onSuccess {
+            runCatching {
+                manager().clearIdentity()
+                adbManager = null
+            }.onSuccess {
                     _status.value = WirelessAdbStatus(
                         stage = WirelessAdbStage.NOT_PAIRED,
                         message = "FineVolume's encrypted ADB identity has been deleted. Remove the matching FineVolume entry from Android's paired devices if you also want to revoke the phone-side authorization."
